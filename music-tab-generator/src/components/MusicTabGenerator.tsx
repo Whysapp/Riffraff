@@ -5,6 +5,7 @@ import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } fr
 import { INSTRUMENTS } from '@/lib/instruments';
 import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
 import Waveform from './Waveform';
+import { toast } from 'sonner';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -48,6 +49,7 @@ export default function MusicTabGenerator() {
     if (file && (file.type.startsWith('audio/') || file.type.startsWith('video/'))) {
       setUploadedFile(file);
       setYoutubeUrl('');
+      toast.success(`Loaded file: ${file.name}`);
     }
   };
 
@@ -92,6 +94,7 @@ export default function MusicTabGenerator() {
         setAnalysis({ durationSec: 0, sampleRate: 0, notes: [], bpm: data.bpm ?? null, key: data.key ?? null });
         setShowResults(true);
         setIsProcessing(false);
+        toast.success('Processed via server');
         return;
       }
 
@@ -111,6 +114,7 @@ export default function MusicTabGenerator() {
       const tab = convertAnalysisToTab(result, selectedInstrumentConfig, 96);
       setGeneratedTab(tab);
       setShowResults(true);
+      toast.success('Analysis complete');
 
       if (audioRef.current) {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
@@ -121,6 +125,7 @@ export default function MusicTabGenerator() {
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Processing failed');
+      toast.error(err?.message || 'Processing failed');
     } finally {
       setIsProcessing(false);
     }
