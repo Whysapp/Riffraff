@@ -156,6 +156,40 @@ export default function MusicTabGenerator() {
     URL.revokeObjectURL(url);
   };
 
+  const exportPdf = async (tab: string[]) => {
+    const { jsPDF } = await import('jspdf');
+    const doc = new jsPDF({ unit: 'pt' });
+    doc.setFont('Courier', 'normal');
+    let y = 40;
+    tab.forEach((line) => {
+      doc.text(line, 40, y);
+      y += 16;
+    });
+    doc.save(`${INSTRUMENTS[selectedInstrument].name.toLowerCase().replace(/\s+/g, '-')}-tab.pdf`);
+  };
+
+  const exportMidi = async (res: AnalysisResult | null) => {
+    if (!res || res.notes.length === 0) return;
+    const { Midi } = await import('@tonejs/midi');
+    const midi = new Midi();
+    const track = midi.addTrack();
+    for (const n of res.notes) {
+      track.addNote({ midi: n.midi, time: n.timeSec, duration: 0.25, velocity: Math.max(0.1, Math.min(1, n.amplitude * 2)) });
+    }
+    const bytes = midi.toArray();
+    const buf = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(buf).set(bytes);
+    const blob = new Blob([buf], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${INSTRUMENTS[selectedInstrument].name.toLowerCase().replace(/\s+/g, '-')}.mid`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white">
       <div className="container mx-auto px-6 py-8">

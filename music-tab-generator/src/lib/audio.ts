@@ -113,21 +113,30 @@ function correlationAtLag(frame: Float32Array, lag: number): number {
   return corr;
 }
 
-export async function analyzeAudioBuffer(audioBuffer: AudioBuffer): Promise<AnalysisResult> {
+export interface AnalyzeOptions {
+  minFreq?: number;
+  maxFreq?: number;
+  amplitudeThreshold?: number;
+  frameSize?: number;
+  hopSize?: number;
+}
+
+export async function analyzeAudioBuffer(audioBuffer: AudioBuffer, options: AnalyzeOptions = {}): Promise<AnalysisResult> {
   const sampleRate = audioBuffer.sampleRate;
   const mono = mixToMono(audioBuffer);
-  const frameSize = 2048;
-  const hopSize = 512;
+  const frameSize = options.frameSize ?? 2048;
+  const hopSize = options.hopSize ?? 512;
   const notes: AnalysisNote[] = [];
   const durationSec = audioBuffer.duration;
 
   for (let start = 0; start + frameSize < mono.length; start += hopSize) {
     const frame = mono.subarray(start, start + frameSize);
     const amplitude = rms(frame);
-    if (amplitude < 0.01) continue; // skip silence
+    const threshold = options.amplitudeThreshold ?? 0.01;
+    if (amplitude < threshold) continue; // skip silence
 
     const frameCopy = new Float32Array(frame); // autocorrelation mutates by mean removal
-    const freq = autocorrelatePitch(frameCopy, sampleRate, 70, 1500);
+    const freq = autocorrelatePitch(frameCopy, sampleRate, options.minFreq ?? 70, options.maxFreq ?? 1500);
     if (!freq) continue;
     const midi = frequencyToMidi(freq);
     const note = midiToNoteName(midi);
@@ -214,6 +223,22 @@ export function convertAnalysisToTab(
 
   return lines;
 }
+
+export function computeWaveform(samples: Float32Array, width: number): Float32Array {
+  const blockSize = Math.floor(samples.length / width) || 1;
+  const result = new Float32Array(width);
+  for (let i = 0; i < width; i += 1) {
+    const start = i * blockSize;
+    let max = 0;
+    for (let j = 0; j < blockSize && start + j < samples.length; j += 1) {
+      const v = Math.abs(samples[start + j]);
+      if (v > max) max = v;
+    }
+    result[i] = max;
+  }
+  return result;
+}
+
 
 function mapFrequencyToStringFret(frequencyHz: number, instrument: InstrumentConfig): { stringIndex: number; fret: number } {
   let bestString = -1;
