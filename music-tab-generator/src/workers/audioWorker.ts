@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { AnalyzeOptions, autocorrelatePitch, frequencyToMidi, midiToNoteName, rms } from '@/lib/audio';
+import { AnalyzeOptions, autocorrelatePitch, frequencyToMidi, midiToNoteName, rms, detectChords } from '@/lib/audio';
 
 export type WorkerIn = {
   samples: Float32Array;
@@ -71,11 +71,20 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     const note = midiToNoteName(midi);
     const timeSec = start / sampleRate;
     notes.push({ timeSec, frequencyHz: freq, midi, note, amplitude: amp });
+
+    // progress event every ~1s
+    if (start % (sampleRate * 1) === 0) {
+      // @ts-ignore
+      self.postMessage({ progress: Math.min(1, start / samples.length) });
+    }
   }
 
   const bpm = estimateTempoFromRms(samples, sampleRate);
   const key = estimateKeyFromNotes(notes);
   const result: WorkerOut = { durationSec, sampleRate, notes, bpm, key };
+  // Include chord hints in a non-breaking field
+  // @ts-ignore
+  result.chords = detectChords(notes);
   // @ts-ignore
   self.postMessage(result);
 };

@@ -104,9 +104,13 @@ export default function MusicTabGenerator() {
       setWaveData(computeWaveform(mono, 600));
       const worker = new Worker(new URL('../workers/audioWorker.ts', import.meta.url));
       const result: AnalysisResult = await new Promise((resolve) => {
-        worker.onmessage = (ev: MessageEvent<AnalysisResult>) => {
-          resolve(ev.data);
-          worker.terminate();
+        worker.onmessage = (ev: MessageEvent<any>) => {
+          if (ev.data?.progress !== undefined) {
+            setPlaybackPosition(Math.round((ev.data.progress as number) * 100));
+          } else {
+            resolve(ev.data as AnalysisResult);
+            worker.terminate();
+          }
         };
       });
       worker.postMessage({ samples: mono, sampleRate: audioBuffer.sampleRate, options, durationSec: audioBuffer.duration });
@@ -369,6 +373,18 @@ export default function MusicTabGenerator() {
                 <p className="text-2xl">{analysis?.key ?? 'G Major'}</p>
               </div>
             </div>
+            {'chords' in (analysis as any || {}) && Array.isArray((analysis as any).chords) && (
+              <div className="mt-6 bg-white/5 rounded-lg p-4">
+                <h3 className="font-semibold mb-2 text-purple-400">Chord Hints</h3>
+                <div className="flex flex-wrap gap-2 text-sm text-gray-200">
+                  {((analysis as any).chords as Array<{ timeSec: number; chord: string }>).slice(0, 24).map((c, i) => (
+                    <span key={i} className="px-2 py-1 rounded bg-purple-500/20 border border-purple-400/40">
+                      {c.chord} @ {c.timeSec.toFixed(1)}s
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
             {errorMsg && <div className="mt-6 text-sm text-red-300">{errorMsg}</div>}
           </div>
         )}

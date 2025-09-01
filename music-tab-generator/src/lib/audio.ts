@@ -239,6 +239,38 @@ export function computeWaveform(samples: Float32Array, width: number): Float32Ar
   return result;
 }
 
+export interface ChordEvent {
+  timeSec: number;
+  chord: string;
+}
+
+export function detectChords(notes: AnalysisNote[], windowSec = 0.3): ChordEvent[] {
+  if (!notes.length) return [];
+  const chords: ChordEvent[] = [];
+  let t = notes[0].timeSec;
+  while (t <= notes[notes.length - 1].timeSec) {
+    const windowNotes = notes.filter((n) => n.timeSec >= t && n.timeSec < t + windowSec);
+    const chord = inferChord(windowNotes.map((n) => n.midi % 12));
+    if (chord) chords.push({ timeSec: t, chord });
+    t += windowSec;
+  }
+  return chords;
+}
+
+function inferChord(pitchClasses: number[]): string | null {
+  if (pitchClasses.length < 2) return null;
+  const uniq = Array.from(new Set(pitchClasses)).sort((a, b) => a - b);
+  const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  for (const root of uniq) {
+    const has = (p: number) => uniq.includes((root + p) % 12);
+    if (has(4) && has(7)) return `${NAMES[root]} Maj`;
+    if (has(3) && has(7)) return `${NAMES[root]} Min`;
+    if (has(4) && has(7) && has(11)) return `${NAMES[root]} Maj7`;
+    if (has(3) && has(7) && has(10)) return `${NAMES[root]} Min7`;
+  }
+  return null;
+}
+
 
 function mapFrequencyToStringFret(frequencyHz: number, instrument: InstrumentConfig): { stringIndex: number; fret: number } {
   let bestString = -1;
