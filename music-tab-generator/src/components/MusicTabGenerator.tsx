@@ -3,7 +3,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
-import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult } from '@/lib/audio';
+import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
+import Waveform from './Waveform';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -39,6 +40,8 @@ export default function MusicTabGenerator() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const [waveData, setWaveData] = useState<Float32Array | null>(null);
+  const [options, setOptions] = useState<AnalyzeOptions>({ minFreq: 70, maxFreq: 1500, amplitudeThreshold: 0.01 });
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -56,11 +59,9 @@ export default function MusicTabGenerator() {
 
   const loadAudioFromYoutube = async (url: string): Promise<ArrayBuffer | null> => {
     try {
-      const resp = await fetch('/api/youtube-extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
-      const data = await resp.json();
-      if (!resp.ok || !data?.audioUrl) throw new Error(data?.error || 'Extraction failed');
-      const audioResp = await fetch(data.audioUrl);
-      const buf = await audioResp.arrayBuffer();
+      const resp = await fetch('/api/ytdl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+      if (!resp.ok) return null;
+      const buf = await resp.arrayBuffer();
       return buf;
     } catch (_) {
       return null;
@@ -96,7 +97,16 @@ export default function MusicTabGenerator() {
 
       if (!arrayBuffer) throw new Error('Unable to load audio');
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
-      const result = await analyzeAudioBuffer(audioBuffer);
+      const mono = audioBuffer.getChannelData(0).slice(0);
+      setWaveData(computeWaveform(mono, 600));
+      const worker = new Worker(new URL('../workers/audioWorker.ts', import.meta.url));
+      const result: AnalysisResult = await new Promise((resolve) => {
+        worker.onmessage = (ev: MessageEvent<AnalysisResult>) => {
+          resolve(ev.data);
+          worker.terminate();
+        };
+      });
+      worker.postMessage({ samples: mono, sampleRate: audioBuffer.sampleRate, options, durationSec: audioBuffer.duration });
       setAnalysis(result);
       const tab = convertAnalysisToTab(result, selectedInstrumentConfig, 96);
       setGeneratedTab(tab);
@@ -239,6 +249,22 @@ export default function MusicTabGenerator() {
             </div>
           </div>
 
+          {/* Processing Settings */}
+          <div className="mb-6 grid md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Min Frequency (Hz)</label>
+              <input type="number" value={options.minFreq ?? 70} onChange={(e) => setOptions((o) => ({ ...o, minFreq: Number(e.target.value) }))} className="w-full px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-white" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Max Frequency (Hz)</label>
+              <input type="number" value={options.maxFreq ?? 1500} onChange={(e) => setOptions((o) => ({ ...o, maxFreq: Number(e.target.value) }))} className="w-full px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-white" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Sensitivity</label>
+              <input type="range" min={0.001} max={0.05} step={0.001} value={options.amplitudeThreshold ?? 0.01} onChange={(e) => setOptions((o) => ({ ...o, amplitudeThreshold: Number(e.target.value) }))} className="w-full" />
+            </div>
+          </div>
+
           <div className="mb-8">
             <label className="block text-sm font-medium text-gray-300 mb-4">Select Instrument</label>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -282,14 +308,22 @@ export default function MusicTabGenerator() {
           <div className="max-w-6xl mx-auto bg-white/10 backdrop-blur-lg rounded-2xl p-8">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
               <h2 className="text-2xl font-semibold mb-4 md:mb-0">Generated Tablature - {INSTRUMENTS[selectedInstrument].name}</h2>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <button onClick={togglePlayback} className="flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
                   {isPlaying ? <Pause className="h-4 w-4 mr-2" /> : <Play className="h-4 w-4 mr-2" />}
                   {isPlaying ? 'Pause' : 'Play'}
                 </button>
                 <button onClick={exportTablature} className="flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
                   <Download className="h-4 w-4 mr-2" />
-                  Export
+                  Export TXT
+                </button>
+                <button onClick={() => exportPdf(generatedTab ?? sampleTablature[selectedInstrument] ?? sampleTablature.guitar)} className="flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+                  <Download className="h-4 w-4 mr-2" />
+                  Export PDF
+                </button>
+                <button onClick={() => exportMidi(analysis)} className="flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors">
+                  <Download className="h-4 w-4 mr-2" />
+                  Export MIDI
                 </button>
               </div>
             </div>
@@ -307,11 +341,18 @@ export default function MusicTabGenerator() {
 
             <div className="bg-black/30 rounded-lg p-6 overflow-x-auto">
               <div className="font-mono text-sm leading-relaxed whitespace-pre">
-                {(sampleTablature[selectedInstrument] || sampleTablature.guitar).map((line, index) => (
+                {(generatedTab ?? sampleTablature[selectedInstrument] ?? sampleTablature.guitar).map((line, index) => (
                   <div key={index} className="mb-1 text-green-400">{line}</div>
                 ))}
               </div>
             </div>
+
+            {waveData && (
+              <div className="mt-6">
+                <h3 className="font-semibold mb-2 text-purple-400">Waveform</h3>
+                <Waveform data={waveData} />
+              </div>
+            )}
 
             <div className="mt-6 grid md:grid-cols-2 gap-6">
               <div className="bg-white/5 rounded-lg p-4">
