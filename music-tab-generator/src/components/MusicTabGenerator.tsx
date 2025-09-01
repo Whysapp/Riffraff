@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
+import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult } from '@/lib/audio';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -32,7 +33,12 @@ export default function MusicTabGenerator() {
   const [showResults, setShowResults] = useState<boolean>(false);
   const [playbackPosition, setPlaybackPosition] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [generatedTab, setGeneratedTab] = useState<string[] | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -42,28 +48,98 @@ export default function MusicTabGenerator() {
     }
   };
 
-  const handleProcess = async () => {
-    if (!uploadedFile && !youtubeUrl) return;
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      setShowResults(true);
-    }, 1200);
+  const selectedInstrumentConfig = useMemo(() => INSTRUMENTS[selectedInstrument], [selectedInstrument]);
+
+  const loadAudioFromFile = async (file: File): Promise<ArrayBuffer> => {
+    return await file.arrayBuffer();
   };
 
-  const togglePlayback = () => {
-    setIsPlaying((p) => !p);
-    if (!isPlaying) {
-      let position = 0;
-      const interval = setInterval(() => {
-        position += 2;
-        setPlaybackPosition(position);
-        if (position >= 100) {
-          clearInterval(interval);
-          setIsPlaying(false);
-        }
-      }, 100);
+  const loadAudioFromYoutube = async (url: string): Promise<ArrayBuffer | null> => {
+    try {
+      const resp = await fetch('/api/youtube-extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+      const data = await resp.json();
+      if (!resp.ok || !data?.audioUrl) throw new Error(data?.error || 'Extraction failed');
+      const audioResp = await fetch(data.audioUrl);
+      const buf = await audioResp.arrayBuffer();
+      return buf;
+    } catch (_) {
+      return null;
     }
+  };
+
+  const handleProcess = async () => {
+    if (!uploadedFile && !youtubeUrl) return;
+    setErrorMsg(null);
+    setIsProcessing(true);
+    setShowResults(false);
+    setAnalysis(null);
+    setGeneratedTab(null);
+
+    try {
+      let arrayBuffer: ArrayBuffer | null = null;
+      if (uploadedFile) {
+        arrayBuffer = await loadAudioFromFile(uploadedFile);
+      } else if (youtubeUrl) {
+        arrayBuffer = await loadAudioFromYoutube(youtubeUrl);
+      }
+
+      if (!arrayBuffer && youtubeUrl) {
+        const resp = await fetch('/api/process-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audioUrl: youtubeUrl, instrumentKey: selectedInstrument }) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || 'Processing failed');
+        setGeneratedTab(data.tablature);
+        setAnalysis({ durationSec: 0, sampleRate: 0, notes: [], bpm: data.bpm ?? null, key: data.key ?? null });
+        setShowResults(true);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (!arrayBuffer) throw new Error('Unable to load audio');
+      const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
+      const result = await analyzeAudioBuffer(audioBuffer);
+      setAnalysis(result);
+      const tab = convertAnalysisToTab(result, selectedInstrumentConfig, 96);
+      setGeneratedTab(tab);
+      setShowResults(true);
+
+      if (audioRef.current) {
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+        const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        objectUrlRef.current = url;
+        audioRef.current.src = url;
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Processing failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  useEffect(() => {
+    const node = audioRef.current;
+    if (!node) return;
+    const onTime = () => {
+      if (!node.duration || isNaN(node.duration)) return;
+      setPlaybackPosition(Math.min(100, (node.currentTime / node.duration) * 100));
+    };
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    node.addEventListener('timeupdate', onTime);
+    node.addEventListener('play', onPlay);
+    node.addEventListener('pause', onPause);
+    return () => {
+      node.removeEventListener('timeupdate', onTime);
+      node.removeEventListener('play', onPlay);
+      node.removeEventListener('pause', onPause);
+    };
+  }, []);
+
+  const togglePlayback = () => {
+    const node = audioRef.current;
+    if (!node) return;
+    if (node.paused) node.play();
+    else node.pause();
   };
 
   const exportTablature = () => {
@@ -192,6 +268,7 @@ export default function MusicTabGenerator() {
               <div className="w-full bg-gray-700 rounded-full h-2">
                 <div className="bg-gradient-to-r from-purple-400 to-pink-400 h-2 rounded-full transition-all duration-300" style={{ width: `${playbackPosition}%` }}></div>
               </div>
+              <audio ref={audioRef} className="hidden" />
             </div>
 
             <div className="bg-black/30 rounded-lg p-6 overflow-x-auto">
@@ -205,13 +282,14 @@ export default function MusicTabGenerator() {
             <div className="mt-6 grid md:grid-cols-2 gap-6">
               <div className="bg-white/5 rounded-lg p-4">
                 <h3 className="font-semibold mb-2 text-purple-400">Detected Tempo</h3>
-                <p className="text-2xl">120 BPM</p>
+                <p className="text-2xl">{analysis?.bpm ?? 120} BPM</p>
               </div>
               <div className="bg-white/5 rounded-lg p-4">
                 <h3 className="font-semibold mb-2 text-purple-400">Key Signature</h3>
-                <p className="text-2xl">G Major</p>
+                <p className="text-2xl">{analysis?.key ?? 'G Major'}</p>
               </div>
             </div>
+            {errorMsg && <div className="mt-6 text-sm text-red-300">{errorMsg}</div>}
           </div>
         )}
 
