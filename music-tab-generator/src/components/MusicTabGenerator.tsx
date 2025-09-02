@@ -13,6 +13,9 @@ import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSett
 import { StemMixer } from '@/components/StemMixer';
 import { StemBlobMap } from '@/types/stems';
 import { untarToMap } from '@/lib/tar';
+import { HealthStatusIndicator } from '@/components/HealthStatusIndicator';
+import { useHealthStatus } from '@/hooks/useHealthStatus';
+import { clientConfig } from '@/lib/config';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -37,6 +40,8 @@ export default function MusicTabGenerator() {
   const [stems, setStems] = useState<StemBlobMap>({});
   const [sepBusy, setSepBusy] = useState(false);
   const [sepError, setSepError] = useState<string | null>(null);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const { status: healthStatus } = useHealthStatus();
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -256,29 +261,64 @@ export default function MusicTabGenerator() {
   };
 
   const onGenerateStems = async (file: File) => {
+    // Check file size on client side
+    const maxBytes = clientConfig.stems.maxMB * 1024 * 1024;
+    if (file.size > maxBytes) {
+      const error = `File too large. Maximum size is ${clientConfig.stems.maxMB}MB`;
+      setSepError(error);
+      toast.error(error);
+      return;
+    }
+
     setSepBusy(true); 
     setSepError(null);
+    
+    // Create abort controller for cancellation
+    const controller = new AbortController();
+    setAbortController(controller);
     
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("model", "htdemucs");           // configurable later
+      formData.append("model", "htdemucs");
       formData.append("stems", "vocals,drums,bass,other");
 
       const res = await fetch("/api/stems/separate", { 
         method: "POST", 
-        body: formData 
+        body: formData,
+        signal: controller.signal
       });
       
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(errorData.error || `Separation failed: ${res.status}`);
+        
+        // Handle specific error types
+        if (res.status === 413) {
+          throw new Error(`File too large. Maximum size is ${clientConfig.stems.maxMB}MB`);
+        } else if (res.status === 408) {
+          throw new Error("Request timed out. Large files on CPU can take several minutes.");
+        } else if (res.status === 502 || res.status === 503) {
+          throw new Error("Stem service is temporarily unavailable. Please try again in a moment.");
+        }
+        
+        throw new Error(errorData.detail || errorData.error || `Separation failed: ${res.status}`);
       }
       
       const arrayBuffer = await res.arrayBuffer();
-      const files = await untarToMap(arrayBuffer);
-      const stemMap: StemBlobMap = {};
       
+      // Process tar file in chunks to avoid blocking UI
+      const files = await new Promise<Map<string, Blob>>((resolve) => {
+        setTimeout(async () => {
+          try {
+            const result = await untarToMap(arrayBuffer);
+            resolve(result);
+          } catch (error) {
+            throw error;
+          }
+        }, 0);
+      });
+      
+      const stemMap: StemBlobMap = {};
       files.forEach((blob, name) => {
         const key = name.replace(/\.wav$/,"") as keyof StemBlobMap;
         if (key in {vocals: 1, drums: 1, bass: 1, guitar: 1, piano: 1, other: 1}) {
@@ -289,10 +329,23 @@ export default function MusicTabGenerator() {
       setStems(stemMap);
       toast.success("Stems generated successfully!");
     } catch (error: any) {
-      setSepError(error?.message || "Failed to generate stems");
-      toast.error(error?.message || "Failed to generate stems");
+      if (error.name === 'AbortError') {
+        setSepError("Stem generation was cancelled");
+        toast.info("Stem generation cancelled");
+      } else {
+        const errorMessage = error?.message || "Failed to generate stems";
+        setSepError(errorMessage);
+        toast.error(errorMessage);
+      }
     } finally {
       setSepBusy(false);
+      setAbortController(null);
+    }
+  };
+
+  const onCancelStems = () => {
+    if (abortController) {
+      abortController.abort();
     }
   };
 
@@ -339,26 +392,55 @@ export default function MusicTabGenerator() {
 
           <div className="mt-6 rounded-lg border border-purple-400/30 bg-white/5 p-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-purple-400">Stem Separation</h3>
-              <button
-                onClick={() => uploadedFile && onGenerateStems(uploadedFile)}
-                disabled={!uploadedFile || sepBusy}
-                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors flex items-center gap-2"
-              >
-                {sepBusy ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Separating…
-                  </>
-                ) : (
-                  "Generate Stems"
+              <div className="flex items-center gap-3">
+                <h3 className="font-semibold text-purple-400">Stem Separation</h3>
+                <HealthStatusIndicator className="text-xs" />
+              </div>
+              <div className="flex items-center gap-2">
+                {sepBusy && abortController && (
+                  <button
+                    onClick={onCancelStems}
+                    className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded-md transition-colors"
+                  >
+                    Cancel
+                  </button>
                 )}
-              </button>
+                <button
+                  onClick={() => uploadedFile && onGenerateStems(uploadedFile)}
+                  disabled={!uploadedFile || sepBusy || healthStatus !== 'online'}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors flex items-center gap-2"
+                >
+                  {sepBusy ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Separating…
+                    </>
+                  ) : (
+                    "Generate Stems"
+                  )}
+                </button>
+              </div>
             </div>
-            {sepError && <p className="text-sm text-red-400 mb-2">{sepError}</p>}
-            <p className="text-xs text-gray-400 mb-3">
-              Run locally with Demucs. CPU works but is slow; GPU recommended.
-            </p>
+            
+            {sepError && (
+              <div className="mb-3 p-2 bg-red-900/20 border border-red-400/30 rounded-md">
+                <p className="text-sm text-red-400">{sepError}</p>
+              </div>
+            )}
+            
+            {healthStatus !== 'online' && !sepBusy && (
+              <div className="mb-3 p-2 bg-yellow-900/20 border border-yellow-400/30 rounded-md">
+                <p className="text-sm text-yellow-400">
+                  Stem service is currently unavailable. Please wait for it to come online.
+                </p>
+              </div>
+            )}
+            
+            <div className="text-xs text-gray-400 mb-3 space-y-1">
+              <p>• Processing time: ~30 seconds to several minutes depending on file size and server load</p>
+              <p>• Maximum file size: {clientConfig.stems.maxMB}MB</p>
+              <p>• Free tier CPU processing - larger files take longer</p>
+            </div>
 
             {Object.values(stems).some(Boolean) && (
               <div className="mt-4">
