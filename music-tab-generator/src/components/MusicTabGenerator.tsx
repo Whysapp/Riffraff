@@ -10,6 +10,8 @@ import { toast } from 'sonner';
 import { AudioProcessor, type FrameAnalysis } from '@/lib/audioProcessor';
 import { TablatureGenerator } from '@/lib/tablatureGenerator';
 import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSettings';
+import { PlayerControls } from '@/components/PlayerControls';
+import { AudioSource } from '@/lib/audioEngine';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -18,8 +20,6 @@ export default function MusicTabGenerator() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [showResults, setShowResults] = useState<boolean>(false);
-  const [playbackPosition, setPlaybackPosition] = useState<number>(0);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [analysis, setAnalysis] = useState<any | null>(null);
   const [generatedTab, setGeneratedTab] = useState<string[] | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -27,8 +27,9 @@ export default function MusicTabGenerator() {
   const [detectedKey, setDetectedKey] = useState<string | null>(null);
   const [frames, setFrames] = useState<FrameAnalysis[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
+  const latestBlobRef = useRef<Blob | null>(null);
+  const latestUrlRef = useRef<string | null>(null);
+  const latestBufferRef = useRef<AudioBuffer | null>(null);
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
   const [advanced, setAdvanced] = useState<AdvancedValues>({ minHz: 70, maxHz: 1500, sensitivity: 50 });
 
@@ -132,6 +133,7 @@ export default function MusicTabGenerator() {
       if (!arrayBuffer) throw new Error('Unable to load audio');
       // Cache disabled by design
 
+      console.debug('[TabGen] start generate');
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
       const mono = audioBuffer.getChannelData(0).slice(0);
       setWaveData(computeWaveform(mono, 600));
@@ -148,16 +150,17 @@ export default function MusicTabGenerator() {
       setShowResults(true);
       toast.success('Analysis complete');
 
-      // Cache disabled
-
-      if (audioRef.current) {
-        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-        const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
-        const url = URL.createObjectURL(blob);
-        objectUrlRef.current = url;
-        audioRef.current.src = url;
-      }
+      // Store the audio for playback - using both buffer and blob for flexibility
+      latestBufferRef.current = audioBuffer;
+      const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
+      latestBlobRef.current = blob;
+      console.debug('[TabGen] got audio buffer and blob', { 
+        duration: audioBuffer.duration, 
+        sampleRate: audioBuffer.sampleRate,
+        blobSize: blob.size 
+      });
     } catch (err: any) {
+      console.error('[TabGen] generation failed', err);
       setErrorMsg(err?.message || 'Processing failed');
       toast.error(err?.message || 'Processing failed');
     } finally {
@@ -170,30 +173,11 @@ export default function MusicTabGenerator() {
     return makeCacheKey([`file:${uploadedFile?.name || 'unknown'}`, fileHash, `inst:${selectedInstrument}`]);
   };
 
-  useEffect(() => {
-    const node = audioRef.current;
-    if (!node) return;
-    const onTime = () => {
-      if (!node.duration || isNaN(node.duration)) return;
-      setPlaybackPosition(Math.min(100, (node.currentTime / node.duration) * 100));
-    };
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
-    node.addEventListener('timeupdate', onTime);
-    node.addEventListener('play', onPlay);
-    node.addEventListener('pause', onPause);
-    return () => {
-      node.removeEventListener('timeupdate', onTime);
-      node.removeEventListener('play', onPlay);
-      node.removeEventListener('pause', onPause);
-    };
-  }, []);
-
-  const togglePlayback = () => {
-    const node = audioRef.current;
-    if (!node) return;
-    if (node.paused) node.play();
-    else node.pause();
+  const getPlaybackSource = (): AudioSource | null => {
+    if (latestBufferRef.current) return { type: "buffer", buffer: latestBufferRef.current };
+    if (latestBlobRef.current)   return { type: "blob", blob: latestBlobRef.current };
+    if (latestUrlRef.current)    return { type: "url", url: latestUrlRef.current };
+    return null;
   };
 
   const exportTablature = () => {
@@ -334,10 +318,6 @@ export default function MusicTabGenerator() {
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
               <h2 className="text-2xl font-semibold mb-4 md:mb-0">Generated Tablature - {INSTRUMENTS[selectedInstrument].name}</h2>
               <div className="flex flex-wrap gap-3">
-                <button onClick={togglePlayback} className="flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
-                  {isPlaying ? <Pause className="h-4 w-4 mr-2" /> : <Play className="h-4 w-4 mr-2" />}
-                  {isPlaying ? 'Pause' : 'Play'}
-                </button>
                 <button onClick={exportTablature} className="flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
                   <Download className="h-4 w-4 mr-2" />
                   Export TXT
@@ -354,14 +334,11 @@ export default function MusicTabGenerator() {
             </div>
 
             <div className="mb-6">
-              <div className="flex items-center gap-3 mb-2">
-                <Volume2 className="h-4 w-4 text-purple-400" />
-                <span className="text-sm text-gray-300">Playback Progress</span>
+              <div className="flex items-center gap-3 mb-4">
+                <Music className="h-4 w-4 text-purple-400" />
+                <span className="text-sm text-gray-300">Audio Playback</span>
               </div>
-              <div className="w-full bg-gray-700 rounded-full h-2">
-                <div className="bg-gradient-to-r from-purple-400 to-pink-400 h-2 rounded-full transition-all duration-300" style={{ width: `${playbackPosition}%` }}></div>
-              </div>
-              <audio ref={audioRef} className="hidden" />
+              <PlayerControls getPlaybackSource={getPlaybackSource} />
             </div>
 
             <div className="bg-black/30 rounded-lg p-6 overflow-x-auto">

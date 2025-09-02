@@ -16,11 +16,14 @@ export interface AnalysisResult {
   key: string | null;
 }
 
+import { getAudioEngine } from './audioEngine';
+
 export async function decodeArrayBufferToAudioBuffer(
   arrayBuffer: ArrayBuffer,
   audioContext?: AudioContext
 ): Promise<AudioBuffer> {
-  const ctx = audioContext ?? new AudioContext();
+  // Use the singleton AudioEngine's context to prevent multiple contexts
+  const ctx = audioContext ?? getAudioEngine().context;
   const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
   return audioBuffer;
 }

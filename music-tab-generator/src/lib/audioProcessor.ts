@@ -4,6 +4,8 @@ export interface FrameAnalysis {
   amplitude: number;
 }
 
+import { getAudioEngine } from './audioEngine';
+
 export class AudioProcessor {
   private audioContext: AudioContext;
   private analyser: AnalyserNode;
@@ -11,8 +13,8 @@ export class AudioProcessor {
   private freqData: Float32Array;
 
   constructor() {
-    // @ts-ignore - webkit fallback for Safari
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Use the singleton AudioEngine's context to prevent multiple contexts
+    this.audioContext = getAudioEngine().context;
     this.analyser = this.audioContext.createAnalyser();
     this.analyser.fftSize = 4096;
     this.analyser.smoothingTimeConstant = 0.3;
