@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
 import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
+import { clearAllCache, getCache, hashBuffer, hashString, makeCacheKey, setCache } from '@/lib/cache';
 import Waveform from './Waveform';
 import { toast } from 'sonner';
 
@@ -43,6 +44,7 @@ export default function MusicTabGenerator() {
   const objectUrlRef = useRef<string | null>(null);
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
   const [options, setOptions] = useState<AnalyzeOptions>({ minFreq: 70, maxFreq: 1500, amplitudeThreshold: 0.01 });
+  const [useCache, setUseCache] = useState<boolean>(true);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -99,6 +101,19 @@ export default function MusicTabGenerator() {
       }
 
       if (!arrayBuffer) throw new Error('Unable to load audio');
+      const cacheKey = await buildCacheKey(arrayBuffer);
+      if (useCache) {
+        const cached = getCache(cacheKey);
+        if (cached) {
+          setAnalysis(cached.analysis);
+          setGeneratedTab(cached.tab);
+          setShowResults(true);
+          toast.success('Loaded from cache');
+          setIsProcessing(false);
+          return;
+        }
+      }
+
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
       const mono = audioBuffer.getChannelData(0).slice(0);
       setWaveData(computeWaveform(mono, 600));
@@ -120,6 +135,9 @@ export default function MusicTabGenerator() {
       setShowResults(true);
       toast.success('Analysis complete');
 
+      // Persist to cache
+      setCache(cacheKey, { analysis: result, tab });
+
       if (audioRef.current) {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
         const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
@@ -133,6 +151,18 @@ export default function MusicTabGenerator() {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const buildCacheKey = async (arrayBuffer: ArrayBuffer): Promise<string> => {
+    if (uploadedFile) {
+      const fileHash = await hashBuffer(arrayBuffer);
+      return makeCacheKey([`file:${uploadedFile.name}`, fileHash, `inst:${selectedInstrument}`]);
+    }
+    if (youtubeUrl) {
+      const urlHash = await hashString(youtubeUrl);
+      return makeCacheKey([`yt:${urlHash}`, `inst:${selectedInstrument}`]);
+    }
+    return makeCacheKey([`unknown`, `inst:${selectedInstrument}`]);
   };
 
   useEffect(() => {
@@ -271,6 +301,13 @@ export default function MusicTabGenerator() {
             <div>
               <label className="block text-sm text-gray-300 mb-1">Sensitivity</label>
               <input type="range" min={0.001} max={0.05} step={0.001} value={options.amplitudeThreshold ?? 0.01} onChange={(e) => setOptions((o) => ({ ...o, amplitudeThreshold: Number(e.target.value) }))} className="w-full" />
+            </div>
+            <div className="flex items-end gap-3">
+              <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" checked={useCache} onChange={(e) => setUseCache(e.target.checked)} />
+                Use cache
+              </label>
+              <button onClick={() => { clearAllCache(); toast.success('Cache cleared'); }} className="ml-auto px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-sm hover:bg-white/20">Clear cache</button>
             </div>
           </div>
 
