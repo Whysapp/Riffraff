@@ -3,30 +3,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
-import { analyzeAudioBuffer, convertAnalysisToTab, decodeArrayBufferToAudioBuffer, type AnalysisResult, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
+import { decodeArrayBufferToAudioBuffer, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
 import { clearAllCache, getCache, hashBuffer, hashString, makeCacheKey, setCache } from '@/lib/cache';
 import Waveform from './Waveform';
 import { toast } from 'sonner';
+import { AudioProcessor, type FrameAnalysis } from '@/lib/audioProcessor';
+import { TablatureGenerator } from '@/lib/tablatureGenerator';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
-
-const sampleTablature: Record<string, string[]> = {
-  guitar: [
-    'E|–3–2–0–2–3–3–3–2–0–2–0–2–0–|',
-    'B|–0–3–0–0–0–0–0–3–0–0–3–3–3–|',
-    'G|–0–2–0–0–0–0–0–2–0–0–2–2–2–|',
-    'D|–0–0–2–0–2–0–2–0–2–2–0–0–0–|',
-    'A|–2–x–2–2–2–2–2–x–2–2–x–x–x–|',
-    'E|–3–x–0–2–x–3–x–x–0–2–x–x–x–|',
-  ],
-  bass: ['G|———————|', 'D|–2–4–2–0———|', 'A|–––––––2–0—|', 'E|—————––3-|'],
-  ukulele: [
-    'A|–0–2–4–2–0–2–4–|',
-    'E|–0–0–0–0–0–0–0–|',
-    'C|–1–1–1–1–1–1–1–|',
-    'G|–2–2–2–2–2–2–2–|',
-  ],
-};
 
 export default function MusicTabGenerator() {
   const [selectedInstrument, setSelectedInstrument] = useState<InstrumentKey>('guitar');
@@ -36,9 +20,12 @@ export default function MusicTabGenerator() {
   const [showResults, setShowResults] = useState<boolean>(false);
   const [playbackPosition, setPlaybackPosition] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [analysis, setAnalysis] = useState<any | null>(null);
   const [generatedTab, setGeneratedTab] = useState<string[] | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [detectedTempo, setDetectedTempo] = useState<number | null>(null);
+  const [detectedKey, setDetectedKey] = useState<string | null>(null);
+  const [frames, setFrames] = useState<FrameAnalysis[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -56,6 +43,13 @@ export default function MusicTabGenerator() {
   };
 
   const selectedInstrumentConfig = useMemo(() => INSTRUMENTS[selectedInstrument], [selectedInstrument]);
+
+  const mapInstrument = (key: InstrumentKey): string => {
+    // Map to generator's internal keys when needed
+    if (key === 'guitar7') return 'guitar';
+    if (key === 'bass5') return 'bass';
+    return key;
+  };
 
   const loadAudioFromFile = async (file: File): Promise<ArrayBuffer> => {
     return await file.arrayBuffer();
@@ -88,17 +82,7 @@ export default function MusicTabGenerator() {
         arrayBuffer = await loadAudioFromYoutube(youtubeUrl);
       }
 
-      if (!arrayBuffer && youtubeUrl) {
-        const resp = await fetch('/api/process-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audioUrl: youtubeUrl, instrumentKey: selectedInstrument }) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || 'Processing failed');
-        setGeneratedTab(data.tablature);
-        setAnalysis({ durationSec: 0, sampleRate: 0, notes: [], bpm: data.bpm ?? null, key: data.key ?? null });
-        setShowResults(true);
-        setIsProcessing(false);
-        toast.success('Processed via server');
-        return;
-      }
+      // no server fallback; require audio bytes
 
       if (!arrayBuffer) throw new Error('Unable to load audio');
       const cacheKey = await buildCacheKey(arrayBuffer);
@@ -117,26 +101,21 @@ export default function MusicTabGenerator() {
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
       const mono = audioBuffer.getChannelData(0).slice(0);
       setWaveData(computeWaveform(mono, 600));
-      const worker = new Worker(new URL('../workers/audioWorker.ts', import.meta.url));
-      const result: AnalysisResult = await new Promise((resolve) => {
-        worker.onmessage = (ev: MessageEvent<any>) => {
-          if (ev.data?.progress !== undefined) {
-            setPlaybackPosition(Math.round((ev.data.progress as number) * 100));
-          } else {
-            resolve(ev.data as AnalysisResult);
-            worker.terminate();
-          }
-        };
-      });
-      worker.postMessage({ samples: mono, sampleRate: audioBuffer.sampleRate, options, durationSec: audioBuffer.duration });
-      setAnalysis(result);
-      const tab = convertAnalysisToTab(result, selectedInstrumentConfig, 96);
-      setGeneratedTab(tab);
+
+      const processor = new AudioProcessor();
+      const analyses = processor.analyzeAudioBuffer(audioBuffer);
+      setFrames(analyses);
+
+      const generator = new TablatureGenerator();
+      const tablature = generator.generateTablature(analyses, mapInstrument(selectedInstrument));
+      setGeneratedTab(tablature.lines);
+      setDetectedTempo(tablature.tempo || processor.detectTempo(analyses) || null);
+      setDetectedKey(tablature.key || null);
       setShowResults(true);
       toast.success('Analysis complete');
 
       // Persist to cache
-      setCache(cacheKey, { analysis: result, tab });
+      setCache(cacheKey, { analysis: { tempo: tablature.tempo, key: tablature.key }, tab: tablature.lines });
 
       if (audioRef.current) {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
@@ -192,8 +171,8 @@ export default function MusicTabGenerator() {
   };
 
   const exportTablature = () => {
-    const tabData = sampleTablature[selectedInstrument] || sampleTablature.guitar;
-    const content = tabData.join('\n');
+    if (!generatedTab) return;
+    const content = generatedTab.join('\n');
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -217,13 +196,18 @@ export default function MusicTabGenerator() {
     doc.save(`${INSTRUMENTS[selectedInstrument].name.toLowerCase().replace(/\s+/g, '-')}-tab.pdf`);
   };
 
-  const exportMidi = async (res: AnalysisResult | null) => {
-    if (!res || res.notes.length === 0) return;
+  const exportMidi = async () => {
+    if (!frames || frames.length === 0) return;
     const { Midi } = await import('@tonejs/midi');
     const midi = new Midi();
     const track = midi.addTrack();
-    for (const n of res.notes) {
-      track.addNote({ midi: n.midi, time: n.timeSec, duration: 0.25, velocity: Math.max(0.1, Math.min(1, n.amplitude * 2)) });
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (!f.frequency || f.frequency <= 0) continue;
+      const midiNum = Math.round(69 + 12 * Math.log2(f.frequency / 440));
+      const nextTime = i + 1 < frames.length ? frames[i + 1].timestamp : f.timestamp + 0.125;
+      const duration = Math.max(0.05, nextTime - f.timestamp);
+      track.addNote({ midi: midiNum, time: f.timestamp, duration, velocity: Math.max(0.1, Math.min(1, f.amplitude * 2)) });
     }
     const bytes = midi.toArray();
     const buf = new ArrayBuffer(bytes.byteLength);
@@ -363,11 +347,11 @@ export default function MusicTabGenerator() {
                   <Download className="h-4 w-4 mr-2" />
                   Export TXT
                 </button>
-                <button onClick={() => exportPdf(generatedTab ?? sampleTablature[selectedInstrument] ?? sampleTablature.guitar)} className="flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+                <button disabled={!generatedTab} onClick={() => generatedTab && exportPdf(generatedTab)} className="flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50">
                   <Download className="h-4 w-4 mr-2" />
                   Export PDF
                 </button>
-                <button onClick={() => exportMidi(analysis)} className="flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors">
+                <button disabled={!frames} onClick={() => exportMidi()} className="flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors disabled:opacity-50">
                   <Download className="h-4 w-4 mr-2" />
                   Export MIDI
                 </button>
@@ -387,7 +371,7 @@ export default function MusicTabGenerator() {
 
             <div className="bg-black/30 rounded-lg p-6 overflow-x-auto">
               <div className="font-mono text-sm leading-relaxed whitespace-pre">
-                {(generatedTab ?? sampleTablature[selectedInstrument] ?? sampleTablature.guitar).map((line, index) => (
+                {(generatedTab ?? []).map((line, index) => (
                   <div key={index} className="mb-1 text-green-400">{line}</div>
                 ))}
               </div>
@@ -403,11 +387,11 @@ export default function MusicTabGenerator() {
             <div className="mt-6 grid md:grid-cols-2 gap-6">
               <div className="bg-white/5 rounded-lg p-4">
                 <h3 className="font-semibold mb-2 text-purple-400">Detected Tempo</h3>
-                <p className="text-2xl">{analysis?.bpm ?? 120} BPM</p>
+                <p className="text-2xl">{detectedTempo ?? '—'} BPM</p>
               </div>
               <div className="bg-white/5 rounded-lg p-4">
                 <h3 className="font-semibold mb-2 text-purple-400">Key Signature</h3>
-                <p className="text-2xl">{analysis?.key ?? 'G Major'}</p>
+                <p className="text-2xl">{detectedKey ?? '—'}</p>
               </div>
             </div>
             {'chords' in (analysis as any || {}) && Array.isArray((analysis as any).chords) && (
