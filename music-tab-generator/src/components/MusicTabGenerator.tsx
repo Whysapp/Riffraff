@@ -4,11 +4,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
 import { decodeArrayBufferToAudioBuffer, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
-import { clearAllCache, getCache, hashBuffer, makeCacheKey, setCache } from '@/lib/cache';
+import { hashBuffer, makeCacheKey } from '@/lib/cache';
 import Waveform from './Waveform';
 import { toast } from 'sonner';
 import { AudioProcessor, type FrameAnalysis } from '@/lib/audioProcessor';
 import { TablatureGenerator } from '@/lib/tablatureGenerator';
+import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSettings';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -29,8 +30,7 @@ export default function MusicTabGenerator() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
-  const [options, setOptions] = useState<AnalyzeOptions>({ minFreq: 70, maxFreq: 1500, amplitudeThreshold: 0.01 });
-  const [useCache, setUseCache] = useState<boolean>(true);
+  const [advanced, setAdvanced] = useState<AdvancedValues>({ minHz: 70, maxHz: 1500, sensitivity: 50 });
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -130,18 +130,7 @@ export default function MusicTabGenerator() {
       // no server fallback; require audio bytes
 
       if (!arrayBuffer) throw new Error('Unable to load audio');
-      const cacheKey = await buildCacheKey(arrayBuffer);
-      if (useCache) {
-        const cached = getCache(cacheKey);
-        if (cached) {
-          setAnalysis(cached.analysis);
-          setGeneratedTab(cached.tab);
-          setShowResults(true);
-          toast.success('Loaded from cache');
-          setIsProcessing(false);
-          return;
-        }
-      }
+      // Cache disabled by design
 
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
       const mono = audioBuffer.getChannelData(0).slice(0);
@@ -159,8 +148,7 @@ export default function MusicTabGenerator() {
       setShowResults(true);
       toast.success('Analysis complete');
 
-      // Persist to cache
-      setCache(cacheKey, { analysis: { tempo: tablature.tempo, key: tablature.key }, tab: tablature.lines });
+      // Cache disabled
 
       if (audioRef.current) {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
@@ -300,28 +288,7 @@ export default function MusicTabGenerator() {
             </div>
           </div>
 
-          {/* Processing Settings */}
-          <div className="mb-6 grid md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Min Frequency (Hz)</label>
-              <input type="number" value={options.minFreq ?? 70} onChange={(e) => setOptions((o) => ({ ...o, minFreq: Number(e.target.value) }))} className="w-full px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-white" />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Max Frequency (Hz)</label>
-              <input type="number" value={options.maxFreq ?? 1500} onChange={(e) => setOptions((o) => ({ ...o, maxFreq: Number(e.target.value) }))} className="w-full px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-white" />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Sensitivity</label>
-              <input type="range" min={0.001} max={0.05} step={0.001} value={options.amplitudeThreshold ?? 0.01} onChange={(e) => setOptions((o) => ({ ...o, amplitudeThreshold: Number(e.target.value) }))} className="w-full" />
-            </div>
-            <div className="flex items-end gap-3">
-              <label className="inline-flex items-center gap-2 text-sm text-gray-300">
-                <input type="checkbox" checked={useCache} onChange={(e) => setUseCache(e.target.checked)} />
-                Use cache
-              </label>
-              <button onClick={() => { clearAllCache(); toast.success('Cache cleared'); }} className="ml-auto px-3 py-2 bg-white/10 border border-purple-400/50 rounded text-sm hover:bg-white/20">Clear cache</button>
-            </div>
-          </div>
+          <AdvancedSettings value={advanced} onChange={setAdvanced} />
 
           <div className="mb-8">
             <label className="block text-sm font-medium text-gray-300 mb-4">Select Instrument</label>
