@@ -58,10 +58,16 @@ export default function MusicTabGenerator() {
   const loadAudioFromYoutube = async (url: string): Promise<ArrayBuffer | null> => {
     try {
       const resp = await fetch('/api/ytdl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        const msg = await resp.json().catch(() => ({}));
+        const detail = (msg && (msg.error || msg.detail)) || `HTTP ${resp.status}`;
+        throw new Error(`YouTube proxy failed: ${detail}`);
+      }
       const buf = await resp.arrayBuffer();
       return buf;
-    } catch (_) {
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'YouTube load failed');
+      toast.error(e?.message || 'YouTube load failed');
       return null;
     }
   };

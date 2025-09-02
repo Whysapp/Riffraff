@@ -7,13 +7,22 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: Request) {
   try {
     const { url } = await request.json();
-    if (!url || typeof url !== 'string' || !ytdl.validateURL(url)) {
+    console.log('[ytdl] incoming', { url });
+    if (!url || typeof url !== 'string') {
+      console.error('[ytdl] missing url');
+      return NextResponse.json({ error: 'Missing URL' }, { status: 400 });
+    }
+    const valid = ytdl.validateURL(url);
+    if (!valid) {
+      console.error('[ytdl] invalid url');
       return NextResponse.json({ error: 'Invalid YouTube URL' }, { status: 400 });
     }
 
     const info = await ytdl.getInfo(url);
+    console.log('[ytdl] videoDetails', { title: info.videoDetails.title, lengthSeconds: info.videoDetails.lengthSeconds, formats: info.formats.length });
     const format = ytdl.chooseFormat(info.formats, { quality: 'highestaudio' });
     if (!format) {
+      console.error('[ytdl] no audio format');
       return NextResponse.json({ error: 'No audio format available' }, { status: 422 });
     }
 
@@ -34,8 +43,9 @@ export async function POST(request: Request) {
         'Cache-Control': 'no-store',
       },
     });
-  } catch (error) {
-    return NextResponse.json({ error: 'Proxy failed' }, { status: 500 });
+  } catch (error: any) {
+    console.error('[ytdl] error', { message: error?.message, stack: error?.stack });
+    return NextResponse.json({ error: 'Proxy failed', detail: error?.message ?? 'unknown' }, { status: 500 });
   }
 }
 
