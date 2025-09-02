@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
   try {
-    const target = process.env.STEMS_SERVICE_URL || "http://127.0.0.1:8001/separate";
+    const target = process.env.STEMS_SERVICE_URL || process.env.NEXT_PUBLIC_STEMS_SERVICE_URL || "http://127.0.0.1:8001/separate";
     
     // Get the form data from the request
     const formData = await req.formData();

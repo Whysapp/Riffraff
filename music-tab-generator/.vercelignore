@@ -1,0 +1,4 @@
+python/
+STEMS_README.md
+*.log
+.env.local

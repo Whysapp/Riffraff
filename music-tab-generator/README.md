@@ -1,59 +1,88 @@
-# TabCraft Pro - Music to Tablature Web App
+# Music Tab Generator with Stem Separation
 
-Transform songs into tablature for guitar, bass, ukulele, banjo, mandolin, and more. Upload audio/video or paste a YouTube URL, then analyze on-device using the Web Audio API. Export as TXT/PDF/MIDI.
-
-Live: https://music-tab-generator-ke8r1qi5c-whysapps-projects.vercel.app
+A Next.js application that converts audio files into musical tablature with local stem separation capabilities.
 
 ## Features
-- Multi-instrument support with tunings and fret ranges
-- Client-side analysis (offline-capable):
-  - Pitch detection (autocorrelation)
-  - Tempo/key estimation
-  - Waveform visualization
-  - Worker-based processing for smooth UI
-- YouTube audio proxy (server API)
-- Export: TXT, PDF, MIDI
-- Processing settings: frequency range, sensitivity
-- Toast notifications for status/errors
 
-## Tech Stack
-- Next.js 14 (App Router) + TypeScript + Tailwind CSS
-- Web Audio API
-- ytdl-core (server) for YouTube extraction
-- lucide-react icons, sonner toasts
+- 🎵 **Multi-instrument tablature generation** (Guitar, Bass, Ukulele, etc.)
+- 🎤 **Local stem separation** using Demucs AI models
+- 🎛️ **Interactive stem mixer** with mute/solo/level controls
+- 📊 **Audio analysis** with tempo and key detection
+- 📁 **Multiple export formats** (TXT, PDF, MIDI)
+- 🎨 **Modern UI** with Tailwind CSS
 
-## Getting Started
+## Quick Start
+
+### Frontend Only (Tablature Generation)
 
 ```bash
 npm install
-npm run dev
-# open http://localhost:3000
+npm run build
+npm run deploy
 ```
 
-## Scripts
-- `npm run dev` - start dev server
-- `npm run build` - production build
-- `npm start` - start production server
+### Full Setup (With Stem Separation)
 
-## API Endpoints
-- `POST /api/upload-audio` - multipart form upload, returns temporary ID
-- `POST /api/youtube-extract` - returns direct audio URL (fallback)
-- `POST /api/ytdl` - streams audio from YouTube to the client
-- `POST /api/process-audio` - stubbed server processing
-- `GET /api/instruments` - instrument configs
+1. **Deploy Python Service:**
+   ```bash
+   cd python/stems
+   pip install -r requirements.txt
+   uvicorn app:app --host 0.0.0.0 --port 8001
+   ```
+
+2. **Deploy Frontend:**
+   ```bash
+   npm run deploy
+   ```
+
+3. **Configure Environment:**
+   Set `STEMS_SERVICE_URL` to your Python service URL
+
+## Deployment Options
+
+### Vercel (Frontend)
+- ✅ Automatic scaling
+- ✅ Edge functions
+- ✅ Easy GitHub integration
+
+### Railway (Python Service)
+- ✅ GPU support
+- ✅ Docker deployment
+- ✅ Automatic HTTPS
 
 ## Architecture
-- `src/components/MusicTabGenerator.tsx` - main UI
-- `src/workers/audioWorker.ts` - pitch/tempo/key + chord hints in a Web Worker with progress
-- `src/lib/audio.ts` - audio utilities (decode, analysis, tab conversion, waveform, chord detection)
-- `src/lib/instruments.ts` - instrument registry
 
-## Notes & Limitations
-- Polyphonic accuracy is limited; optimized for single instrument lines
-- YouTube proxy is intended for demo usage; consider caching and rate limits
-- PDF/MIDI exports are basic; customize as needed
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Next.js App   │───▶│  Vercel Edge     │───▶│  Python Service │
+│   (Frontend)    │    │  Functions       │    │  (Demucs AI)    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
 
-## Roadmap
-- Improve chord recognition and polyphonic handling
-- Optional server-side DSP for heavy workloads
-- Add SSE/WebSocket for long-running tasks
+## Tech Stack
+
+- **Frontend:** Next.js 14, TypeScript, Tailwind CSS
+- **Backend:** FastAPI, Demucs, PyTorch
+- **Deployment:** Vercel + Railway/Cloud Run
+- **Audio:** Web Audio API, FFmpeg
+
+## Performance
+
+- **Tablature Generation:** ~2-5 seconds
+- **Stem Separation (GPU):** ~5-30 seconds
+- **Stem Separation (CPU):** ~2-10 minutes
+
+## Getting Started
+
+1. Clone this repository
+2. Install dependencies: `npm install`
+3. Start development: `npm run dev`
+4. Open http://localhost:3000
+
+## Production Deployment
+
+See [QUICK_DEPLOY.md](./QUICK_DEPLOY.md) for detailed deployment instructions.
+
+## License
+
+MIT License - feel free to use for personal and commercial projects.
