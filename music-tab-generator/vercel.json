@@ -1,11 +1,5 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/next"
-    }
-  ],
   "env": {
     "STEMS_SERVICE_URL": "https://your-stems-service.herokuapp.com/separate"
   },
