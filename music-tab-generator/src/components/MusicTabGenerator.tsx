@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Play, Pause, Download, Settings, Music, Volume2, FileAudio } from 'lucide-react';
 import { INSTRUMENTS } from '@/lib/instruments';
 import { decodeArrayBufferToAudioBuffer, computeWaveform, type AnalyzeOptions } from '@/lib/audio';
-import { clearAllCache, getCache, hashBuffer, hashString, makeCacheKey, setCache } from '@/lib/cache';
+import { clearAllCache, getCache, hashBuffer, makeCacheKey, setCache } from '@/lib/cache';
 import Waveform from './Waveform';
 import { toast } from 'sonner';
 import { AudioProcessor, type FrameAnalysis } from '@/lib/audioProcessor';
@@ -15,7 +15,6 @@ type InstrumentKey = keyof typeof INSTRUMENTS;
 export default function MusicTabGenerator() {
   const [selectedInstrument, setSelectedInstrument] = useState<InstrumentKey>('guitar');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [youtubeUrl, setYoutubeUrl] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [showResults, setShowResults] = useState<boolean>(false);
   const [playbackPosition, setPlaybackPosition] = useState<number>(0);
@@ -33,13 +32,73 @@ export default function MusicTabGenerator() {
   const [options, setOptions] = useState<AnalyzeOptions>({ minFreq: 70, maxFreq: 1500, amplitudeThreshold: 0.01 });
   const [useCache, setUseCache] = useState<boolean>(true);
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const detectFileType = (file: File): boolean => {
+    if (file.type && file.type.startsWith('audio/')) return true;
+    const fileName = file.name.toLowerCase();
+    const audioExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.webm'];
+    return audioExtensions.some((ext) => fileName.endsWith(ext));
+  };
+
+  const validateAudioFile = async (file: File): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const buffer = e.target?.result as ArrayBuffer;
+        const view = new Uint8Array(buffer.slice(0, 4));
+        const signatures: number[][] = [
+          [0xff, 0xfb],
+          [0xff, 0xf3],
+          [0xff, 0xf2],
+          [0x52, 0x49, 0x46, 0x46],
+          [0x66, 0x4c, 0x61, 0x43],
+          [0x4f, 0x67, 0x67, 0x53],
+        ];
+        const isValidAudio = signatures.some((sig) => sig.every((b, i) => view[i] === b));
+        resolve(isValidAudio || detectFileType(file));
+      };
+      reader.readAsArrayBuffer(file.slice(0, 4));
+    });
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file && (file.type.startsWith('audio/') || file.type.startsWith('video/'))) {
-      setUploadedFile(file);
-      setYoutubeUrl('');
-      toast.success(`Loaded file: ${file.name}`);
+    if (!file) return;
+    console.log('File selected:', file.name, file.type, file.size);
+
+    const validTypes = [
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/wav',
+      'audio/wave',
+      'audio/x-wav',
+      'audio/flac',
+      'audio/x-flac',
+      'audio/mp4',
+      'audio/m4a',
+      'audio/aac',
+      'audio/ogg',
+      'audio/webm',
+    ];
+    const validExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg'];
+    let isValidType = file.type ? validTypes.includes(file.type.toLowerCase()) : false;
+    if (!isValidType) {
+      const ext = file.name.toLowerCase().substring(file.name.toLowerCase().lastIndexOf('.'));
+      isValidType = validExtensions.includes(ext);
     }
+    if (!isValidType) {
+      const ok = await validateAudioFile(file);
+      if (!ok) {
+        toast.error(`Invalid file type: ${file.type || 'unknown'}. Please select an audio file (MP3, WAV, FLAC, M4A, AAC, OGG)`);
+        return;
+      }
+    }
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      toast.error(`File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 50MB.`);
+      return;
+    }
+    setUploadedFile(file);
+    toast.success(`File accepted: ${file.name}`);
   };
 
   const selectedInstrumentConfig = useMemo(() => INSTRUMENTS[selectedInstrument], [selectedInstrument]);
@@ -55,44 +114,10 @@ export default function MusicTabGenerator() {
     return await file.arrayBuffer();
   };
 
-  const loadAudioFromYoutube = async (url: string): Promise<ArrayBuffer | null> => {
-    try {
-      // First try our streaming proxy
-      let resp = await fetch('/api/ytdl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
-      if (resp.ok) {
-        const buf = await resp.arrayBuffer();
-        return buf;
-      }
-      // If streaming fails (e.g., 410), first try youtube-extract (ytdl)
-      let meta = await fetch('/api/youtube-extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
-      const metaJson = await meta.json();
-      if (!meta.ok || !metaJson?.audioUrl) {
-        // Try youtubei fallback
-        const alt = await fetch('/api/youtubei', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
-        const altJson = await alt.json();
-        if (!alt.ok || !altJson?.audioUrl) {
-          const detail = metaJson?.error || metaJson?.detail || altJson?.error || altJson?.detail || `HTTP ${meta.status}`;
-          throw new Error(`YouTube extract failed: ${detail}`);
-        }
-        resp = await fetch('/api/fetch-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: altJson.audioUrl }) });
-      } else {
-        resp = await fetch('/api/fetch-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: metaJson.audioUrl }) });
-      }
-      if (!resp.ok) {
-        const j = await resp.json().catch(() => ({}));
-        throw new Error(`Fetch-audio failed: ${j?.error || j?.detail || resp.status}`);
-      }
-      const buf = await resp.arrayBuffer();
-      return buf;
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'YouTube load failed');
-      toast.error(e?.message || 'YouTube load failed');
-      return null;
-    }
-  };
+  // YouTube functionality removed
 
   const handleProcess = async () => {
-    if (!uploadedFile && !youtubeUrl) return;
+    if (!uploadedFile) return;
     setErrorMsg(null);
     setIsProcessing(true);
     setShowResults(false);
@@ -100,12 +125,7 @@ export default function MusicTabGenerator() {
     setGeneratedTab(null);
 
     try {
-      let arrayBuffer: ArrayBuffer | null = null;
-      if (uploadedFile) {
-        arrayBuffer = await loadAudioFromFile(uploadedFile);
-      } else if (youtubeUrl) {
-        arrayBuffer = await loadAudioFromYoutube(youtubeUrl);
-      }
+      let arrayBuffer: ArrayBuffer | null = await loadAudioFromFile(uploadedFile);
 
       // no server fallback; require audio bytes
 
@@ -158,15 +178,8 @@ export default function MusicTabGenerator() {
   };
 
   const buildCacheKey = async (arrayBuffer: ArrayBuffer): Promise<string> => {
-    if (uploadedFile) {
-      const fileHash = await hashBuffer(arrayBuffer);
-      return makeCacheKey([`file:${uploadedFile.name}`, fileHash, `inst:${selectedInstrument}`]);
-    }
-    if (youtubeUrl) {
-      const urlHash = await hashString(youtubeUrl);
-      return makeCacheKey([`yt:${urlHash}`, `inst:${selectedInstrument}`]);
-    }
-    return makeCacheKey([`unknown`, `inst:${selectedInstrument}`]);
+    const fileHash = await hashBuffer(arrayBuffer);
+    return makeCacheKey([`file:${uploadedFile?.name || 'unknown'}`, fileHash, `inst:${selectedInstrument}`]);
   };
 
   useEffect(() => {
@@ -259,41 +272,31 @@ export default function MusicTabGenerator() {
           <p className="text-xl text-gray-300">Transform any song into perfect tablature for your instrument</p>
         </div>
 
-        <div className="max-w-4xl mx-auto bg-white/10 backdrop-blur-lg rounded-2xl p-8 mb-8">
-          <h2 className="text-2xl font-semibold mb-6 flex items-center">
+        <div className="max-w-2xl mx-auto bg-white/10 backdrop-blur-lg rounded-2xl p-8 mb-8">
+          <h2 className="text-2xl font-semibold mb-6 text-center flex items-center justify-center">
             <Upload className="h-6 w-6 mr-2 text-purple-400" />
-            Upload Your Music
+            Upload Your Audio File
           </h2>
 
-          <div className="grid md:grid-cols-2 gap-6 mb-6">
-            <div className="space-y-4">
-              <label className="block text-sm font-medium text-gray-300">Upload Audio/Video File</label>
-              <div className="border-2 border-dashed border-purple-400 rounded-lg p-8 text-center cursor-pointer hover:border-purple-300 transition-colors" onClick={() => fileInputRef.current?.click()}>
-                <FileAudio className="h-12 w-12 text-purple-400 mx-auto mb-4" />
-                <p className="text-gray-300">{uploadedFile ? uploadedFile.name : 'Click to upload or drag & drop'}</p>
-                <p className="text-sm text-gray-400 mt-2">MP3, WAV, FLAC, MP4, etc.</p>
-                <input ref={fileInputRef} type="file" className="hidden" accept="audio/*,video/*" onChange={handleFileUpload} />
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <label className="block text-sm font-medium text-gray-300">Or YouTube URL</label>
-              <div className="space-y-4">
-                <input
-                  type="url"
-                  value={youtubeUrl}
-                  onChange={(e) => {
-                    setYoutubeUrl(e.target.value);
-                    if (e.target.value) setUploadedFile(null);
-                  }}
-                  placeholder="https://youtube.com/watch?v=..."
-                  className="w-full px-4 py-3 bg-white/10 border border-purple-400/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-400 text-white placeholder-gray-400"
-                />
-                <div className="text-sm text-gray-400">
-                  <p>• Supports YouTube, Vimeo, SoundCloud</p>
-                  <p>• Automatically extracts audio</p>
-                </div>
-              </div>
+          <div className="mb-6">
+            <div className="border-2 border-dashed border-purple-400 rounded-lg p-12 text-center cursor-pointer hover:border-purple-300 transition-colors touch-manipulation" onClick={() => fileInputRef.current?.click()} style={{ minHeight: '200px', WebkitTouchCallout: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation' as any }}>
+              <FileAudio className="h-16 w-16 text-purple-400 mx-auto mb-6" />
+              <p className="text-gray-300 text-lg mb-2">{uploadedFile ? uploadedFile.name : 'Tap to select audio file'}</p>
+              <p className="text-sm text-gray-400">MP3, WAV, FLAC, M4A, AAC, OGG</p>
+              <p className="text-xs text-gray-500 mt-2">Maximum file size: 50MB</p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg"
+                capture={false as any}
+                multiple={false}
+                onChange={handleFileUpload}
+                // @ts-ignore iOS specific attributes
+                webkitdirectory={false}
+                // @ts-ignore
+                directory={false}
+              />
             </div>
           </div>
 
@@ -342,7 +345,7 @@ export default function MusicTabGenerator() {
 
           <button
             onClick={handleProcess}
-            disabled={(!uploadedFile && !youtubeUrl) || isProcessing}
+            disabled={!uploadedFile || isProcessing}
             className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-lg transition-all flex items-center justify-center"
           >
             {isProcessing ? (
