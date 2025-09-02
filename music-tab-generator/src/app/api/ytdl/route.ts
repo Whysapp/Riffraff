@@ -25,24 +25,76 @@ export async function POST(request: Request) {
       console.error('[ytdl] no audio format');
       return NextResponse.json({ error: 'No audio format available' }, { status: 422 });
     }
+    try {
+      const readable = ytdl.downloadFromInfo(info, {
+        quality: 'highestaudio',
+        filter: 'audioonly',
+        dlChunkSize: 0,
+        highWaterMark: 1 << 25,
+        requestOptions: {
+          headers: {
+            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            accept: '*/*',
+          },
+        },
+      } as any);
 
-    const readable = ytdl.downloadFromInfo(info, { quality: 'highestaudio', filter: 'audioonly' });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          readable.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+          readable.on('end', () => controller.close());
+          readable.on('error', (err: Error) => controller.error(err));
+        },
+      });
 
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        readable.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-        readable.on('end', () => controller.close());
-        readable.on('error', (err: Error) => controller.error(err));
-      },
-    });
-
-    return new NextResponse(stream, {
-      status: 200,
-      headers: {
-        'Content-Type': 'audio/mpeg',
-        'Cache-Control': 'no-store',
-      },
-    });
+      return new NextResponse(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (streamErr: any) {
+      console.error('[ytdl] stream error, trying direct fetch fallback', { message: streamErr?.message });
+      try {
+        const upstream = await fetch(format.url, {
+          headers: {
+            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            accept: '*/*',
+            range: 'bytes=0-'
+          },
+        });
+        if (!upstream.ok || !upstream.body) {
+          const text = await upstream.text().catch(() => '');
+          console.error('[ytdl] direct fetch failed', { status: upstream.status, text: text.slice(0, 200) });
+          return NextResponse.json({ error: 'Direct fetch failed', status: upstream.status }, { status: 502 });
+        }
+        const reader = (upstream.body as ReadableStream<Uint8Array>).getReader();
+        const stream = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+            } else {
+              controller.enqueue(value);
+            }
+          },
+          cancel() {
+            reader.cancel();
+          },
+        });
+        return new NextResponse(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': format.mimeType?.split(';')[0] || 'audio/mpeg',
+            'Cache-Control': 'no-store',
+          },
+        });
+      } catch (fetchErr: any) {
+        console.error('[ytdl] fallback direct fetch error', { message: fetchErr?.message });
+        return NextResponse.json({ error: 'Proxy failed', detail: fetchErr?.message ?? 'unknown' }, { status: 500 });
+      }
+    }
   } catch (error: any) {
     console.error('[ytdl] error', { message: error?.message, stack: error?.stack });
     return NextResponse.json({ error: 'Proxy failed', detail: error?.message ?? 'unknown' }, { status: 500 });
