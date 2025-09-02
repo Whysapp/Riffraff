@@ -1,0 +1,6 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+torch  # let pip resolve cuda/cpu variant; users with GPUs can install torch+cuda wheel
+demucs==4.0.0
+numpy
+soundfile

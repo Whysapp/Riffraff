@@ -10,9 +10,10 @@ type SliderProps = {
   step?: number;
   onValueChange?: (val: [number]) => void;
   className?: string;
+  disabled?: boolean;
 };
 
-export function Slider({ id, value, min = 0, max = 100, step = 1, onValueChange, className }: SliderProps) {
+export function Slider({ id, value, min = 0, max = 100, step = 1, onValueChange, className, disabled }: SliderProps) {
   const v = value?.[0] ?? 0;
   return (
     <input
@@ -23,6 +24,7 @@ export function Slider({ id, value, min = 0, max = 100, step = 1, onValueChange,
       max={max}
       step={step}
       value={v}
+      disabled={disabled}
       onChange={(e) => onValueChange?.([Number(e.target.value)])}
     />
   );

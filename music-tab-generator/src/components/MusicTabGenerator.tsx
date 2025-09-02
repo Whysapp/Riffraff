@@ -10,6 +10,9 @@ import { toast } from 'sonner';
 import { AudioProcessor, type FrameAnalysis } from '@/lib/audioProcessor';
 import { TablatureGenerator } from '@/lib/tablatureGenerator';
 import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSettings';
+import { StemMixer } from '@/components/StemMixer';
+import { StemBlobMap } from '@/types/stems';
+import { untarToMap } from '@/lib/tar';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -31,6 +34,9 @@ export default function MusicTabGenerator() {
   const objectUrlRef = useRef<string | null>(null);
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
   const [advanced, setAdvanced] = useState<AdvancedValues>({ minHz: 70, maxHz: 1500, sensitivity: 50 });
+  const [stems, setStems] = useState<StemBlobMap>({});
+  const [sepBusy, setSepBusy] = useState(false);
+  const [sepError, setSepError] = useState<string | null>(null);
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -249,6 +255,47 @@ export default function MusicTabGenerator() {
     URL.revokeObjectURL(url);
   };
 
+  const onGenerateStems = async (file: File) => {
+    setSepBusy(true); 
+    setSepError(null);
+    
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("model", "htdemucs");           // configurable later
+      formData.append("stems", "vocals,drums,bass,other");
+
+      const res = await fetch("/api/stems/separate", { 
+        method: "POST", 
+        body: formData 
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(errorData.error || `Separation failed: ${res.status}`);
+      }
+      
+      const arrayBuffer = await res.arrayBuffer();
+      const files = await untarToMap(arrayBuffer);
+      const stemMap: StemBlobMap = {};
+      
+      files.forEach((blob, name) => {
+        const key = name.replace(/\.wav$/,"") as keyof StemBlobMap;
+        if (key in {vocals: 1, drums: 1, bass: 1, guitar: 1, piano: 1, other: 1}) {
+          stemMap[key] = blob;
+        }
+      });
+      
+      setStems(stemMap);
+      toast.success("Stems generated successfully!");
+    } catch (error: any) {
+      setSepError(error?.message || "Failed to generate stems");
+      toast.error(error?.message || "Failed to generate stems");
+    } finally {
+      setSepBusy(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white">
       <div className="container mx-auto px-6 py-8">
@@ -289,6 +336,36 @@ export default function MusicTabGenerator() {
           </div>
 
           <AdvancedSettings value={advanced} onChange={setAdvanced} />
+
+          <div className="mt-6 rounded-lg border border-purple-400/30 bg-white/5 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-purple-400">Stem Separation</h3>
+              <button
+                onClick={() => uploadedFile && onGenerateStems(uploadedFile)}
+                disabled={!uploadedFile || sepBusy}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors flex items-center gap-2"
+              >
+                {sepBusy ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Separating…
+                  </>
+                ) : (
+                  "Generate Stems"
+                )}
+              </button>
+            </div>
+            {sepError && <p className="text-sm text-red-400 mb-2">{sepError}</p>}
+            <p className="text-xs text-gray-400 mb-3">
+              Run locally with Demucs. CPU works but is slow; GPU recommended.
+            </p>
+
+            {Object.values(stems).some(Boolean) && (
+              <div className="mt-4">
+                <StemMixer stems={stems} />
+              </div>
+            )}
+          </div>
 
           <div className="mb-8">
             <label className="block text-sm font-medium text-gray-300 mb-4">Select Instrument</label>
