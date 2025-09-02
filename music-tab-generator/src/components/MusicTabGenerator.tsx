@@ -63,14 +63,21 @@ export default function MusicTabGenerator() {
         const buf = await resp.arrayBuffer();
         return buf;
       }
-      // If streaming fails (e.g., 410), get direct audio URL and fetch via server-side fetch proxy
-      const meta = await fetch('/api/youtube-extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+      // If streaming fails (e.g., 410), first try youtube-extract (ytdl)
+      let meta = await fetch('/api/youtube-extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
       const metaJson = await meta.json();
       if (!meta.ok || !metaJson?.audioUrl) {
-        const detail = metaJson?.error || metaJson?.detail || `HTTP ${meta.status}`;
-        throw new Error(`YouTube extract failed: ${detail}`);
+        // Try youtubei fallback
+        const alt = await fetch('/api/youtubei', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+        const altJson = await alt.json();
+        if (!alt.ok || !altJson?.audioUrl) {
+          const detail = metaJson?.error || metaJson?.detail || altJson?.error || altJson?.detail || `HTTP ${meta.status}`;
+          throw new Error(`YouTube extract failed: ${detail}`);
+        }
+        resp = await fetch('/api/fetch-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: altJson.audioUrl }) });
+      } else {
+        resp = await fetch('/api/fetch-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: metaJson.audioUrl }) });
       }
-      resp = await fetch('/api/fetch-audio', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: metaJson.audioUrl }) });
       if (!resp.ok) {
         const j = await resp.json().catch(() => ({}));
         throw new Error(`Fetch-audio failed: ${j?.error || j?.detail || resp.status}`);
