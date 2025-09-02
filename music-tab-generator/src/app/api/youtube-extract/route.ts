@@ -26,7 +26,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Audio format not found' }, { status: 422 });
     }
 
-    return NextResponse.json({ ok: true, audioUrl: format.url, title: info.videoDetails.title, itag: format.itag, mimeType: format.mimeType });
+    // Return direct URL as metadata so client can call /api/fetch-audio to proxy fetch
+    return NextResponse.json({ ok: true, audioUrl: format.url, title: info.videoDetails.title, itag: format.itag, mimeType: format.mimeType, lengthSeconds: info.videoDetails.lengthSeconds });
   } catch (error: any) {
     console.error('[youtube-extract] error', { message: error?.message, stack: error?.stack });
     return NextResponse.json({ error: 'Extraction failed', detail: error?.message ?? 'unknown' }, { status: 500 });
