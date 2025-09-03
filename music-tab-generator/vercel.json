@@ -9,6 +9,9 @@
     },
     "src/app/api/upload-audio/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/stems/separate/route.ts": {
+      "maxDuration": 120
     }
   },
   "regions": ["iad1"],
