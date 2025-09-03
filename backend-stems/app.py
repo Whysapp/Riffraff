@@ -18,12 +18,16 @@ from demucs.apply import apply_model
 app = FastAPI(title="Riffraff Stem Separation", version="1.0.0")
 
 
-MODEL_NAME = os.environ.get("DEMUCS_MODEL", "htdemucs")
+MODEL_NAME = os.environ.get("DEMUCS_MODEL", "htdemucs_quantized")
 TARGET_SAMPLE_RATE = 44100
 TARGET_NUM_CHANNELS = 2
 
 _loaded_model = None
 _inference_device = "cuda" if torch.cuda.is_available() else "cpu"
+try:
+    torch.set_num_threads(max(1, int(os.environ.get("TORCH_NUM_THREADS", "1"))))
+except Exception:
+    pass
 
 
 def load_demucs_model():
@@ -39,6 +43,16 @@ def load_demucs_model():
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "device": _inference_device, "model": MODEL_NAME}
+
+
+@app.on_event("startup")
+def _preload_model_on_startup() -> None:
+    # Preload to avoid first-request cold start and potential timeouts
+    try:
+        load_demucs_model()
+    except Exception:
+        # Still allow the app to start; /health will indicate model name and device
+        pass
 
 
 @app.post("/separate")
@@ -68,7 +82,12 @@ async def separate(file: UploadFile = File(...)):
 
             with torch.no_grad():
                 # Output shape: [sources, channels, samples]
-                separated_sources = apply_model(model, audio_tensor, overlap=0.25)[0].to("cpu")
+                separated_sources = apply_model(
+                    model,
+                    audio_tensor,
+                    split=True,  # chunked inference to reduce memory
+                    overlap=0.25,
+                )[0].to("cpu")
 
             source_names = getattr(model, "sources", ["drums", "bass", "other", "vocals"])  # type: ignore[attr-defined]
 
