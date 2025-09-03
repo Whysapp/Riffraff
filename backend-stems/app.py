@@ -4,6 +4,7 @@ import zipfile
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+import asyncio
 from fastapi.responses import FileResponse
 
 import torch
@@ -46,12 +47,13 @@ def health() -> dict:
 
 
 @app.on_event("startup")
-def _preload_model_on_startup() -> None:
-    # Preload to avoid first-request cold start and potential timeouts
+async def _preload_model_on_startup() -> None:
+    # Preload in a background thread to avoid blocking readiness
+    loop = asyncio.get_running_loop()
     try:
-        load_demucs_model()
+        await loop.run_in_executor(None, load_demucs_model)
     except Exception:
-        # Still allow the app to start; /health will indicate model name and device
+        # Allow app to start even if preload fails; first request will attempt to load
         pass
 
 
