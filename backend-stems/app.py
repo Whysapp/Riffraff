@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 import torch
 import numpy as np
-import soundfile as sf
+import wave
 
 from demucs.pretrained import get_model
 from demucs.audio import AudioFile
@@ -99,9 +99,16 @@ async def separate(file: UploadFile = File(...)):
                 # De-normalize
                 stem_tensor = stem_tensor * (reference_channel.std() + 1e-8) + reference_channel.mean()
                 stem_np = stem_tensor.transpose(0, 1).numpy()  # [samples, channels]
+                # Clip to [-1, 1] and convert to int16 PCM
+                stem_np = np.clip(stem_np, -1.0, 1.0)
+                pcm = (stem_np * 32767.0).astype(np.int16)
 
                 out_path = os.path.join(tmp_dir, f"{source_name}.wav")
-                sf.write(out_path, stem_np, TARGET_SAMPLE_RATE)
+                with wave.open(out_path, "wb") as wf:
+                    wf.setnchannels(TARGET_NUM_CHANNELS)
+                    wf.setsampwidth(2)  # 16-bit
+                    wf.setframerate(TARGET_SAMPLE_RATE)
+                    wf.writeframes(pcm.tobytes())
                 saved_paths.append(out_path)
 
             zip_path = os.path.join(tmp_dir, "stems.zip")
