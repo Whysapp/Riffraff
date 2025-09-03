@@ -22,6 +22,7 @@ app = FastAPI(title="Riffraff Stem Separation", version="1.0.0")
 MODEL_NAME = os.environ.get("DEMUCS_MODEL", "htdemucs_quantized")
 TARGET_SAMPLE_RATE = 44100
 TARGET_NUM_CHANNELS = 2
+MAX_DURATION_SECONDS = int(os.environ.get("MAX_DURATION_SECONDS", "15"))
 
 _loaded_model = None
 _inference_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -76,6 +77,10 @@ async def separate(file: UploadFile = File(...)):
                 streams=0, samplerate=TARGET_SAMPLE_RATE, channels=TARGET_NUM_CHANNELS
             )
 
+            # Cap duration to reduce CPU/RAM usage on small instances
+            if audio.shape[1] > TARGET_SAMPLE_RATE * MAX_DURATION_SECONDS:
+                audio = audio[:, : TARGET_SAMPLE_RATE * MAX_DURATION_SECONDS]
+
             reference_channel = audio.mean(0)
             audio = (audio - reference_channel.mean()) / (reference_channel.std() + 1e-8)
 
@@ -88,7 +93,8 @@ async def separate(file: UploadFile = File(...)):
                     model,
                     audio_tensor,
                     split=True,  # chunked inference to reduce memory
-                    overlap=0.25,
+                    overlap=0.10,
+                    shifts=0,
                 )[0].to("cpu")
 
             source_names = getattr(model, "sources", ["drums", "bass", "other", "vocals"])  # type: ignore[attr-defined]
