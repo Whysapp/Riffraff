@@ -3,7 +3,6 @@ services:
   - type: web
     name: riffraff-frontend
     env: node
-    rootDir: music-tab-generator
     buildCommand: npm install && npm run build
     startCommand: npm start
     plan: free
