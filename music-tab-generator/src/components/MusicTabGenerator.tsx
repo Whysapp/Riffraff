@@ -12,6 +12,7 @@ import { TablatureGenerator } from '@/lib/tablatureGenerator';
 import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSettings';
 import { PlayerControls } from '@/components/PlayerControls';
 import { AudioSource } from '@/lib/audioEngine';
+import { ClientStemSeparator } from '@/lib/clientStemSeparator';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -32,6 +33,53 @@ export default function MusicTabGenerator() {
   const latestBufferRef = useRef<AudioBuffer | null>(null);
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
   const [advanced, setAdvanced] = useState<AdvancedValues>({ minHz: 70, maxHz: 1500, sensitivity: 50 });
+
+  // Stem separation state
+  const [enableStemSeparation, setEnableStemSeparation] = useState(false);
+  const [selectedStem, setSelectedStem] = useState('all');
+  const [separationProgress, setSeparationProgress] = useState(0);
+  const [separatedAudio, setSeparatedAudio] = useState<AudioBuffer | null>(null);
+  const [isProcessingSeparation, setIsProcessingSeparation] = useState(false);
+  const [isPlayingPreview, setIsPlayingPreview] = useState(false);
+  const [audioSource, setAudioSource] = useState<AudioBufferSourceNode | null>(null);
+
+  const stemOptions = [
+    { 
+      id: 'all', 
+      name: 'Full Mix', 
+      description: 'Use original audio',
+      icon: '🎵',
+      color: 'bg-blue-500'
+    },
+    { 
+      id: 'vocals', 
+      name: 'Vocals Only', 
+      description: 'Isolate vocal track',
+      icon: '🎤',
+      color: 'bg-pink-500'
+    },
+    { 
+      id: 'drums', 
+      name: 'Drums Only', 
+      description: 'Isolate drum track',
+      icon: '🥁',
+      color: 'bg-red-500'
+    },
+    { 
+      id: 'bass', 
+      name: 'Bass Only', 
+      description: 'Isolate bass guitar',
+      icon: '🎸',
+      color: 'bg-green-500'
+    },
+    { 
+      id: 'other', 
+      name: 'Other Instruments', 
+      description: 'Everything except vocals/drums/bass',
+      icon: '🎹',
+      color: 'bg-purple-500'
+    },
+  ];
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -117,6 +165,45 @@ export default function MusicTabGenerator() {
 
   // YouTube functionality removed
 
+  const playPreview = async () => {
+    if (!separatedAudio || isPlayingPreview) return;
+    
+    try {
+      const audioContext = new AudioContext();
+      const source = audioContext.createBufferSource();
+      source.buffer = separatedAudio;
+      source.connect(audioContext.destination);
+      
+      source.onended = () => {
+        setIsPlayingPreview(false);
+        setAudioSource(null);
+      };
+      
+      source.start(0);
+      setAudioSource(source);
+      setIsPlayingPreview(true);
+      
+      // Auto-stop after 10 seconds
+      setTimeout(() => {
+        if (source && audioContext.state !== 'closed') {
+          source.stop();
+        }
+      }, 10000);
+      
+    } catch (error) {
+      console.error('Preview playback failed:', error);
+      setIsPlayingPreview(false);
+    }
+  };
+
+  const stopPreview = () => {
+    if (audioSource) {
+      audioSource.stop();
+      setAudioSource(null);
+      setIsPlayingPreview(false);
+    }
+  };
+
   const handleProcess = async () => {
     if (!uploadedFile) return;
     setErrorMsg(null);
@@ -124,6 +211,7 @@ export default function MusicTabGenerator() {
     setShowResults(false);
     setAnalysis(null);
     setGeneratedTab(null);
+    setSeparationProgress(0);
 
     try {
       let arrayBuffer: ArrayBuffer | null = await loadAudioFromFile(uploadedFile);
@@ -134,12 +222,35 @@ export default function MusicTabGenerator() {
       // Cache disabled by design
 
       console.debug('[TabGen] start generate');
-      const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
-      const mono = audioBuffer.getChannelData(0).slice(0);
+      const originalBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
+      
+      let audioBufferToProcess: AudioBuffer;
+      
+      // Step 1: Stem Separation (if enabled)
+      if (enableStemSeparation && selectedStem !== 'all') {
+        setIsProcessingSeparation(true);
+        toast.info(`Separating ${stemOptions.find(s => s.id === selectedStem)?.name || selectedStem} track...`);
+        
+        const stemSeparator = new ClientStemSeparator();
+        audioBufferToProcess = await stemSeparator.separateStems(
+          originalBuffer, 
+          selectedStem,
+          (progress) => setSeparationProgress(progress)
+        );
+        
+        setSeparatedAudio(audioBufferToProcess);
+        setIsProcessingSeparation(false);
+        toast.success(`${stemOptions.find(s => s.id === selectedStem)?.name} isolated successfully!`);
+      } else {
+        audioBufferToProcess = originalBuffer;
+      }
+
+      const mono = audioBufferToProcess.getChannelData(0).slice(0);
       setWaveData(computeWaveform(mono, 600));
 
+      // Step 2: Generate Tablature from processed audio
       const processor = new AudioProcessor();
-      const analyses = processor.analyzeAudioBuffer(audioBuffer);
+      const analyses = processor.analyzeAudioBuffer(audioBufferToProcess);
       setFrames(analyses);
 
       const generator = new TablatureGenerator();
@@ -148,15 +259,15 @@ export default function MusicTabGenerator() {
       setDetectedTempo(tablature.tempo || processor.detectTempo(analyses) || null);
       setDetectedKey(tablature.key || null);
       setShowResults(true);
-      toast.success('Analysis complete');
+      toast.success('Tablature generated successfully!');
 
       // Store the audio for playback - using both buffer and blob for flexibility
-      latestBufferRef.current = audioBuffer;
+      latestBufferRef.current = audioBufferToProcess;
       const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
       latestBlobRef.current = blob;
       console.debug('[TabGen] got audio buffer and blob', { 
-        duration: audioBuffer.duration, 
-        sampleRate: audioBuffer.sampleRate,
+        duration: audioBufferToProcess.duration, 
+        sampleRate: audioBufferToProcess.sampleRate,
         blobSize: blob.size 
       });
     } catch (err: any) {
@@ -165,6 +276,8 @@ export default function MusicTabGenerator() {
       toast.error(err?.message || 'Processing failed');
     } finally {
       setIsProcessing(false);
+      setIsProcessingSeparation(false);
+      setSeparationProgress(0);
     }
   };
 
@@ -273,6 +386,96 @@ export default function MusicTabGenerator() {
           </div>
 
           <AdvancedSettings value={advanced} onChange={setAdvanced} />
+
+          {/* Stem Separation Section */}
+          <div className="mb-8 bg-white/5 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-semibold text-white">Stem Separation</h3>
+              <div className="flex items-center">
+                <input
+                  type="checkbox"
+                  id="stem-separation"
+                  checked={enableStemSeparation}
+                  onChange={(e) => setEnableStemSeparation(e.target.checked)}
+                  className="mr-3 w-5 h-5 text-purple-600 bg-transparent border-2 border-purple-400 rounded focus:ring-purple-500"
+                />
+                <label htmlFor="stem-separation" className="text-white font-medium cursor-pointer">
+                  Enable AI Separation (Better Accuracy)
+                </label>
+              </div>
+            </div>
+            
+            {enableStemSeparation && (
+              <div className="space-y-6">
+                {/* Progress Bar (when processing) */}
+                {isProcessingSeparation && (
+                  <div className="w-full bg-gray-700 rounded-full h-3">
+                    <div 
+                      className="bg-gradient-to-r from-purple-400 to-pink-400 h-3 rounded-full transition-all duration-300"
+                      style={{ width: `${separationProgress}%` }}
+                    ></div>
+                    <p className="text-center text-sm text-gray-300 mt-2">
+                      Separating audio stems... {Math.round(separationProgress)}%
+                    </p>
+                  </div>
+                )}
+                
+                {/* Stem Selection Grid */}
+                <div>
+                  <h4 className="text-purple-400 font-medium mb-4">Select Instrument to Isolate:</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {stemOptions.map((stem) => (
+                      <button
+                        key={stem.id}
+                        onClick={() => setSelectedStem(stem.id)}
+                        disabled={isProcessingSeparation}
+                        className={`p-4 rounded-xl border-2 transition-all text-left hover:scale-105 transform disabled:opacity-50 disabled:cursor-not-allowed ${
+                          selectedStem === stem.id
+                            ? 'border-purple-400 bg-purple-400/20 shadow-lg shadow-purple-400/30'
+                            : 'border-gray-600 bg-white/5 hover:border-purple-400/50'
+                        }`}
+                      >
+                        <div className="flex items-center mb-2">
+                          <span className="text-2xl mr-3">{stem.icon}</span>
+                          <div className={`w-3 h-3 rounded-full ${stem.color} opacity-80`}></div>
+                        </div>
+                        <div className="font-medium text-white mb-1">{stem.name}</div>
+                        <div className="text-xs text-gray-400">{stem.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* Audio Preview (after separation) */}
+                {separatedAudio && selectedStem !== 'all' && (
+                  <div className="bg-white/5 rounded-lg p-4">
+                    <h5 className="text-purple-400 font-medium mb-3">Preview Separated Audio:</h5>
+                    <div className="flex items-center space-x-4">
+                      <button 
+                        onClick={isPlayingPreview ? stopPreview : playPreview}
+                        className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg flex items-center"
+                      >
+                        {isPlayingPreview ? (
+                          <>
+                            <Pause className="h-4 w-4 mr-2" />
+                            Stop Preview
+                          </>
+                        ) : (
+                          <>
+                            <Play className="h-4 w-4 mr-2" />
+                            Play Preview
+                          </>
+                        )}
+                      </button>
+                      <span className="text-gray-300 text-sm">
+                        {stemOptions.find(s => s.id === selectedStem)?.name} - Isolated
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="mb-8">
             <label className="block text-sm font-medium text-gray-300 mb-4">Select Instrument</label>
