@@ -13,6 +13,7 @@ import { AdvancedSettings, type AdvancedValues } from '@/components/AdvancedSett
 import { PlayerControls } from '@/components/PlayerControls';
 import { AudioSource } from '@/lib/audioEngine';
 import { ClientStemSeparator } from '@/lib/clientStemSeparator';
+import { ProfessionalAudioInterface } from '@/components/ProfessionalAudioInterface';
 
 type InstrumentKey = keyof typeof INSTRUMENTS;
 
@@ -42,6 +43,7 @@ export default function MusicTabGenerator() {
   const [isProcessingSeparation, setIsProcessingSeparation] = useState(false);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
   const [audioSource, setAudioSource] = useState<AudioBufferSourceNode | null>(null);
+  const [showProfessionalInterface, setShowProfessionalInterface] = useState(false);
 
   const stemOptions = [
     { 
@@ -450,26 +452,36 @@ export default function MusicTabGenerator() {
                 {separatedAudio && selectedStem !== 'all' && (
                   <div className="bg-white/5 rounded-lg p-4">
                     <h5 className="text-purple-400 font-medium mb-3">Preview Separated Audio:</h5>
-                    <div className="flex items-center space-x-4">
-                      <button 
-                        onClick={isPlayingPreview ? stopPreview : playPreview}
-                        className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg flex items-center"
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                        <button 
+                          onClick={isPlayingPreview ? stopPreview : playPreview}
+                          className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg flex items-center"
+                        >
+                          {isPlayingPreview ? (
+                            <>
+                              <Pause className="h-4 w-4 mr-2" />
+                              Stop Preview
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-4 w-4 mr-2" />
+                              Play Preview
+                            </>
+                          )}
+                        </button>
+                        <span className="text-gray-300 text-sm">
+                          {stemOptions.find(s => s.id === selectedStem)?.name} - Isolated
+                        </span>
+                      </div>
+                      
+                      <button
+                        onClick={() => setShowProfessionalInterface(true)}
+                        className="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded-lg flex items-center text-sm"
                       >
-                        {isPlayingPreview ? (
-                          <>
-                            <Pause className="h-4 w-4 mr-2" />
-                            Stop Preview
-                          </>
-                        ) : (
-                          <>
-                            <Play className="h-4 w-4 mr-2" />
-                            Play Preview
-                          </>
-                        )}
+                        <Music className="h-4 w-4 mr-2" />
+                        Open Pro Interface
                       </button>
-                      <span className="text-gray-300 text-sm">
-                        {stemOptions.find(s => s.id === selectedStem)?.name} - Isolated
-                      </span>
                     </div>
                   </div>
                 )}
@@ -605,6 +617,27 @@ export default function MusicTabGenerator() {
                 <p className="text-gray-300 text-sm">Download as text, PDF, or import into popular software</p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Professional Audio Interface Modal/Overlay */}
+        {showProfessionalInterface && latestBufferRef.current && (
+          <div className="fixed inset-0 z-50">
+            <ProfessionalAudioInterface
+              originalAudio={latestBufferRef.current}
+              fileName={uploadedFile?.name || 'audio-file'}
+              onExport={(stems) => {
+                console.log('Stems exported:', stems);
+                toast.success('Stems exported successfully!');
+              }}
+            />
+            {/* Close button overlay */}
+            <button
+              onClick={() => setShowProfessionalInterface(false)}
+              className="absolute top-4 right-4 z-60 bg-slate-800 hover:bg-slate-700 p-2 rounded-lg"
+            >
+              <span className="text-white text-lg">×</span>
+            </button>
           </div>
         )}
       </div>

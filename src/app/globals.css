@@ -10,3 +10,35 @@ body {
   background-color: #0f1020;
 }
 
+/* Custom slider styles for professional audio interface */
+.slider-cyan::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #06b6d4;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.slider-cyan::-webkit-slider-track {
+  background: #475569;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.slider-cyan::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #06b6d4;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.slider-cyan::-moz-range-track {
+  background: #475569;
+  height: 4px;
+  border-radius: 2px;
+}
+
