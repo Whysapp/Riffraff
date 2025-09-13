@@ -1,4 +1,17 @@
 services:
+  # Frontend - Next.js Music Tab Generator with Stem Separation
+  - type: web
+    name: riffraff-frontend
+    env: node
+    rootDir: music-tab-generator
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+  
+  # Backend - Python Stem Separation API (Legacy)
   - type: web
     name: riffraff-stems
     env: python
