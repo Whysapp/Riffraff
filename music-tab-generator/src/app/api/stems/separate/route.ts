@@ -22,59 +22,110 @@ export async function POST(request: NextRequest) {
     try {
       console.log('Attempting HuggingFace direct API call')
       
-      // Use the correct Gradio API endpoint from documentation
-      const endpoint = 'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/call/separate_selected_models';
-      
-      // Prepare the request payload according to the API documentation
-      const payload = {
-        data: [
-          file, // audio_path parameter
-          true, // run_htdemucs parameter  
-          true  // run_spleeter parameter
-        ]
-      };
+      // Try multiple endpoint formats that Gradio commonly uses
+      const possibleEndpoints = [
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/api/predict',
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/run/separate_selected_models',
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/call/separate_selected_models'
+      ];
 
-      console.log(`Calling endpoint: ${endpoint}`);
-      
-      const hfResponse = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      
-      console.log(`HuggingFace API response status: ${hfResponse.status}`);
-
-      if (hfResponse.ok) {
-        const result = await hfResponse.json()
-        console.log('HuggingFace API response:', JSON.stringify(result, null, 2))
-        
-        // Process HuggingFace response according to documentation
-        // Returns list of 10 elements: [drums, bass, other, vocals, vocals, drums, bass, other, piano, status]
-        if (result.data && Array.isArray(result.data) && result.data.length >= 4) {
-          const stems = {
-            drums: result.data[0]?.url || result.data[5]?.url || '', // First drums or second drums
-            bass: result.data[1]?.url || result.data[6]?.url || '',  // First bass or second bass  
-            other: result.data[2]?.url || result.data[7]?.url || '', // First other or second other
-            vocals: result.data[3]?.url || result.data[4]?.url || '', // First vocals or second vocals
-          };
+      for (const endpoint of possibleEndpoints) {
+        try {
+          console.log(`Trying endpoint: ${endpoint}`);
           
-          return NextResponse.json({
-            success: true,
-            stems: stems,
-            source: 'huggingface',
-            status: result.data[9] || 'Completed', // Status message
-          })
-        } else {
-          lastError = 'Unexpected response format from HuggingFace API';
-          console.warn('Unexpected HuggingFace response format:', result)
+          // Try FormData approach first
+          const formData = new FormData();
+          formData.append('data', JSON.stringify([
+            file,  // audio_path
+            true,  // run_htdemucs
+            true   // run_spleeter
+          ]));
+          
+          let hfResponse = await fetch(endpoint, {
+            method: 'POST',
+            body: formData,
+          });
+          
+          console.log(`FormData attempt - Status: ${hfResponse.status}`);
+          
+          // If FormData fails, try JSON approach
+          if (!hfResponse.ok) {
+            console.log('FormData failed, trying JSON approach');
+            
+            const fileArrayBuffer = await file.arrayBuffer();
+            const fileBase64 = Buffer.from(fileArrayBuffer).toString('base64');
+            const fileName = (file as any).name || 'audio.wav';
+            
+            const payload = {
+              data: [
+                {
+                  name: fileName,
+                  data: `data:${file.type};base64,${fileBase64}`
+                },
+                true, // run_htdemucs
+                true  // run_spleeter
+              ]
+            };
+            
+            hfResponse = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(payload),
+            });
+            
+            console.log(`JSON attempt - Status: ${hfResponse.status}`);
+          }
+          
+          if (hfResponse.ok) {
+            const result = await hfResponse.json()
+            console.log('HuggingFace API response:', JSON.stringify(result, null, 2))
+            
+            // Process response - try different possible formats
+            let stems = null;
+            
+            if (result.data && Array.isArray(result.data) && result.data.length >= 4) {
+              // Format from documentation: 10 elements
+              stems = {
+                drums: result.data[0]?.url || result.data[5]?.url || '',
+                bass: result.data[1]?.url || result.data[6]?.url || '',
+                other: result.data[2]?.url || result.data[7]?.url || '',
+                vocals: result.data[3]?.url || result.data[4]?.url || '',
+              };
+            } else if (result && typeof result === 'object') {
+              // Try direct object format
+              stems = {
+                drums: result.drums?.url || result.drums || '',
+                bass: result.bass?.url || result.bass || '',
+                other: result.other?.url || result.other || '',
+                vocals: result.vocals?.url || result.vocals || '',
+              };
+            }
+            
+            if (stems && Object.values(stems).some(url => url)) {
+              return NextResponse.json({
+                success: true,
+                stems: stems,
+                source: 'huggingface',
+                status: result.data?.[9] || result.status || 'Completed',
+              })
+            } else {
+              lastError = `Unexpected response format from ${endpoint}`;
+              console.warn('Unexpected response format:', result)
+            }
+          } else {
+            const errorText = await hfResponse.text();
+            lastError = `${hfResponse.status}: ${errorText}`;
+            console.warn(`Endpoint ${endpoint} failed: ${lastError}`);
+          }
+        } catch (endpointError) {
+          lastError = String(endpointError);
+          console.warn(`Endpoint ${endpoint} error:`, endpointError);
         }
-      } else {
-        const errorText = await hfResponse.text();
-        lastError = `${hfResponse.status}: ${errorText}`;
-        console.warn(`HuggingFace API failed: ${lastError}`);
       }
+      
+      console.warn('All HuggingFace endpoints failed');
     } catch (hfError) {
       lastError = String(hfError);
       console.warn('HuggingFace direct API failed:', hfError)
