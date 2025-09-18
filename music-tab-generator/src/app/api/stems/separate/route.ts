@@ -77,64 +77,92 @@ export async function POST(request: NextRequest) {
           const queueResult = await queueResponse.json();
           console.log('Queue result:', JSON.stringify(queueResult, null, 2));
           
-          // Step 3: Poll for results using Server-Sent Events or polling
+          // Step 3: Poll for results using the correct Gradio queue format
           const eventId = queueResult.event_id;
+          console.log(`Got event_id: ${eventId}, starting to poll for results`);
+          
           if (eventId) {
-            // Poll for completion
+            // Poll for completion with proper Gradio queue status checking
             const maxAttempts = 30; // 30 attempts = ~60 seconds
             let attempts = 0;
             
             while (attempts < maxAttempts) {
               await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+              attempts++;
               
               try {
-                const statusResponse = await fetch(`${baseUrl}/gradio_api/queue/status`, {
-                  method: 'POST',
+                // Use Server-Sent Events endpoint for real-time updates
+                const statusUrl = `${baseUrl}/gradio_api/queue/data?session_hash=${queuePayload.session_hash}`;
+                console.log(`Poll attempt ${attempts}: checking ${statusUrl}`);
+                
+                const statusResponse = await fetch(statusUrl, {
+                  method: 'GET',
                   headers: {
-                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
                   },
-                  body: JSON.stringify({ event_id: eventId }),
                 });
                 
                 if (statusResponse.ok) {
-                  const statusResult = await statusResponse.json();
-                  console.log(`Poll attempt ${attempts + 1}:`, statusResult);
+                  const statusText = await statusResponse.text();
+                  console.log(`Poll attempt ${attempts} response:`, statusText.substring(0, 500));
                   
-                  if (statusResult.success && statusResult.data) {
-                    // Process successful result
-                    const data = statusResult.data;
-                    if (Array.isArray(data) && data.length >= 4) {
-                      const stems = {
-                        drums: data[0]?.url || data[5]?.url || '',
-                        bass: data[1]?.url || data[6]?.url || '',
-                        other: data[2]?.url || data[7]?.url || '',
-                        vocals: data[3]?.url || data[4]?.url || '',
-                      };
-                      
-                      return NextResponse.json({
-                        success: true,
-                        stems: stems,
-                        source: 'huggingface',
-                        status: data[9] || 'Completed',
-                      });
+                  // Parse SSE format: look for "data: " lines
+                  const lines = statusText.split('\n');
+                  for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                      try {
+                        const data = JSON.parse(line.substring(6));
+                        console.log(`SSE data:`, data);
+                        
+                        if (data.msg === 'process_completed' && data.output) {
+                          // Process successful result
+                          const outputData = data.output.data;
+                          if (Array.isArray(outputData) && outputData.length >= 4) {
+                            const stems = {
+                              drums: outputData[0]?.url || outputData[5]?.url || '',
+                              bass: outputData[1]?.url || outputData[6]?.url || '',
+                              other: outputData[2]?.url || outputData[7]?.url || '',
+                              vocals: outputData[3]?.url || outputData[4]?.url || '',
+                            };
+                            
+                            console.log('Successfully extracted stems:', stems);
+                            
+                            return NextResponse.json({
+                              success: true,
+                              stems: stems,
+                              source: 'huggingface',
+                              status: outputData[9] || 'Completed',
+                            });
+                          }
+                        } else if (data.msg === 'process_starts') {
+                          console.log('Processing started...');
+                        } else if (data.msg === 'estimation') {
+                          console.log(`Queue position: ${data.rank}, estimated time: ${data.queue_eta}s`);
+                        } else if (data.msg === 'error') {
+                          lastError = data.output || 'Processing error occurred';
+                          console.error('Processing error:', data);
+                          break;
+                        }
+                      } catch (parseError) {
+                        // Skip invalid JSON lines
+                      }
                     }
-                  } else if (statusResult.error) {
-                    lastError = statusResult.error;
-                    break;
                   }
+                } else {
+                  console.warn(`Poll attempt ${attempts} failed with status: ${statusResponse.status}`);
                 }
               } catch (pollError) {
-                console.warn(`Poll attempt ${attempts + 1} failed:`, pollError);
+                console.warn(`Poll attempt ${attempts} failed:`, pollError);
               }
-              
-              attempts++;
             }
             
             if (attempts >= maxAttempts) {
-              lastError = 'Processing timeout - please try again with a smaller file';
+              lastError = 'Processing timeout after 60 seconds - the file may be too large or the service is busy';
+              console.warn('Polling timeout reached');
             }
           } else {
-            lastError = 'Failed to join processing queue';
+            lastError = 'Failed to get event_id from queue join response';
+            console.error('No event_id in queue result:', queueResult);
           }
         } else {
           const queueError = await queueResponse.text();
