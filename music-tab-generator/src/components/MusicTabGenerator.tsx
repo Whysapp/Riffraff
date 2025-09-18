@@ -225,10 +225,29 @@ export default function MusicTabGenerator() {
     setStemJobId(null);
 
     try {
+      let fileToProcess = uploadedFile;
+      
+      // Compress large files to improve processing speed
+      if (uploadedFile.size > 10 * 1024 * 1024) { // 10MB threshold
+        toast.info('Compressing large file for faster processing...');
+        setStemJobStatus('Compressing file...');
+        
+        try {
+          const { compressAudioFile, getCompressionOptions } = await import('@/lib/audioCompression');
+          const compressionOptions = getCompressionOptions(uploadedFile.size, 'stems');
+          fileToProcess = await compressAudioFile(uploadedFile, compressionOptions);
+          
+          toast.info(`File compressed from ${(uploadedFile.size / 1024 / 1024).toFixed(1)}MB to ${(fileToProcess.size / 1024 / 1024).toFixed(1)}MB`);
+        } catch (compressionError) {
+          console.warn('Compression failed, using original file:', compressionError);
+          toast.warning('Compression failed, using original file. Processing may take longer.');
+        }
+      }
+      
       toast.info('Starting stem separation with AI...');
       
       const formData = new FormData();
-      formData.append('file', uploadedFile);
+      formData.append('file', fileToProcess);
 
       const response = await fetch('/api/stems/separate', {
         method: 'POST',
