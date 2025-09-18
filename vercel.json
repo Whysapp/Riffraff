@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "name": "riffraff",
+  "builds": [
+    {
+      "src": "music-tab-generator/package.json",
+      "use": "@vercel/next",
+      "config": {
+        "projectSettings": {
+          "framework": "nextjs"
+        }
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "music-tab-generator/$1"
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production",
+    "HF_PROXY_URL": ""
+  },
+  "functions": {
+    "music-tab-generator/src/app/api/**/*.ts": {
+      "maxDuration": 120
+    }
+  }
+}
