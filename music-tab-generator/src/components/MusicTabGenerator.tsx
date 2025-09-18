@@ -33,6 +33,8 @@ export default function MusicTabGenerator() {
   const [useCache, setUseCache] = useState<boolean>(true);
   const [stems, setStems] = useState<{drums: string, bass: string, other: string, vocals: string} | null>(null);
   const [isSeparatingStems, setIsSeparatingStems] = useState<boolean>(false);
+  const [stemJobStatus, setStemJobStatus] = useState<string>('');
+  const [stemJobId, setStemJobId] = useState<string | null>(null);
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -219,9 +221,11 @@ export default function MusicTabGenerator() {
     if (!uploadedFile) return;
     setIsSeparatingStems(true);
     setStems(null);
+    setStemJobStatus('Starting...');
+    setStemJobId(null);
 
     try {
-      toast.info('Separating stems with AI...');
+      toast.info('Starting stem separation with AI...');
       
       const formData = new FormData();
       formData.append('file', uploadedFile);
@@ -244,19 +248,105 @@ export default function MusicTabGenerator() {
         throw new Error(result.error || 'Stem separation failed');
       }
 
-      setStems(result.stems);
-      
-      // Show success message with source info
-      const sourceMsg = result.source === 'huggingface' ? 'Stems separated with HuggingFace AI' :
-                       result.source === 'proxy' ? 'Stems separated with HuggingFace AI (via proxy)' :
-                       'Stems separated with fallback method';
-      toast.success(sourceMsg);
+      // Check if we got immediate results or a job ID
+      if (result.stems) {
+        // Immediate results
+        setStems(result.stems);
+        setStemJobStatus('Completed');
+        
+        const sourceMsg = result.source === 'huggingface' ? 'Stems separated with HuggingFace AI' :
+                         result.source === 'proxy' ? 'Stems separated with HuggingFace AI (via proxy)' :
+                         'Stems separated with fallback method';
+        toast.success(sourceMsg);
+        
+      } else if (result.jobId) {
+        // Async job started - poll for results
+        setStemJobId(result.jobId);
+        setStemJobStatus('Processing in queue...');
+        toast.info('Job started! Processing may take 2-5 minutes...');
+        
+        // Start polling for results
+        pollStemJobStatus(result.jobId, result.sessionHash);
+      } else {
+        throw new Error('Unexpected response format');
+      }
 
     } catch (err: any) {
       toast.error(err?.message || 'Stem separation failed');
-    } finally {
       setIsSeparatingStems(false);
+      setStemJobStatus('');
     }
+  };
+
+  const pollStemJobStatus = async (jobId: string, sessionHash: string) => {
+    const maxAttempts = 60; // 5 minutes at 5-second intervals
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        attempts++;
+        console.log(`Polling attempt ${attempts}/${maxAttempts} for job ${jobId}`);
+        
+        const statusResponse = await fetch(`/api/stems/status?jobId=${jobId}&sessionHash=${sessionHash}`);
+        
+        if (statusResponse.ok) {
+          const statusResult = await statusResponse.json();
+          console.log('Status result:', statusResult);
+          
+          if (statusResult.success === true && statusResult.stems) {
+            // Job completed successfully
+            setStems(statusResult.stems);
+            setStemJobStatus('Completed');
+            setIsSeparatingStems(false);
+            toast.success('Stems separated successfully with HuggingFace AI!');
+            return;
+            
+          } else if (statusResult.success === false) {
+            // Job failed
+            setStemJobStatus('Failed');
+            setIsSeparatingStems(false);
+            toast.error(statusResult.error || 'Stem separation failed');
+            return;
+            
+          } else {
+            // Still processing
+            const status = statusResult.status || 'processing';
+            const message = statusResult.message || 'Processing...';
+            setStemJobStatus(message);
+            
+            if (statusResult.queuePosition !== undefined) {
+              toast.info(`Queue position: ${statusResult.queuePosition}, estimated: ${statusResult.estimatedTime}s`);
+            }
+          }
+        } else {
+          console.warn(`Status check failed: ${statusResponse.status}`);
+        }
+        
+        // Continue polling if not completed and within limits
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000); // Poll every 5 seconds
+        } else {
+          // Timeout
+          setStemJobStatus('Timeout - please try again');
+          setIsSeparatingStems(false);
+          toast.error('Processing timeout. Please try again with a smaller file.');
+        }
+        
+      } catch (pollError) {
+        console.error('Polling error:', pollError);
+        
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000); // Retry on error
+        } else {
+          setStemJobStatus('Error checking status');
+          setIsSeparatingStems(false);
+          toast.error('Failed to check processing status');
+        }
+      }
+    };
+    
+    // Start polling after a short delay
+    setTimeout(poll, 2000);
   };
 
   useEffect(() => {
@@ -445,10 +535,17 @@ export default function MusicTabGenerator() {
               className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-lg transition-all flex items-center justify-center"
             >
               {isSeparatingStems ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
-                  Separating Stems...
-                </>
+                <div className="flex flex-col items-center">
+                  <div className="flex items-center mb-1">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
+                    Separating Stems...
+                  </div>
+                  {stemJobStatus && (
+                    <div className="text-xs text-blue-200">
+                      {stemJobStatus}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <>
                   <Music className="h-5 w-5 mr-2" />
