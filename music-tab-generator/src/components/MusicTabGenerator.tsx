@@ -258,6 +258,24 @@ export default function MusicTabGenerator() {
         if (response.status === 413) {
           throw new Error(`File too large for stem separation. Please use a smaller audio file (under 50MB) or try compressing it.`);
         }
+        
+        // Handle 503 - service unavailable (expected for direct HuggingFace redirect)
+        if (response.status === 503) {
+          const result = await response.json();
+          if (result.directLink) {
+            // Show helpful message with direct link
+            toast.error(result.message || 'Service temporarily unavailable');
+            toast.info('Opening HuggingFace Space for direct use...');
+            
+            // Open the direct link in a new tab
+            window.open(result.directLink, '_blank');
+            
+            setIsSeparatingStems(false);
+            setStemJobStatus('Use HuggingFace Space directly');
+            return;
+          }
+        }
+        
         throw new Error(`Stem separation failed: ${response.status}`);
       }
 
