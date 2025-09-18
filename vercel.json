@@ -1,30 +1,41 @@
 {
-  "version": 2,
-  "name": "riffraff",
-  "builds": [
-    {
-      "src": "music-tab-generator/package.json",
-      "use": "@vercel/next",
-      "config": {
-        "projectSettings": {
-          "framework": "nextjs"
-        }
-      }
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "functions": {
+    "src/app/api/process-audio/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/upload-audio/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/stems/separate/route.ts": {
+      "maxDuration": 120
     }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "music-tab-generator/$1"
-    }
-  ],
+  },
+  "regions": ["iad1"],
   "env": {
     "NODE_ENV": "production",
     "HF_PROXY_URL": ""
   },
-  "functions": {
-    "music-tab-generator/src/app/api/**/*.ts": {
-      "maxDuration": 120
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization"
+        }
+      ]
     }
-  }
+  ]
 }
