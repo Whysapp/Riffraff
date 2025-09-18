@@ -17,22 +17,49 @@ export async function POST(request: NextRequest) {
     console.log(`Processing file: ${(file as any).name}, size: ${file.size} bytes`)
 
     // Try direct HuggingFace Spaces API first
+    let lastError: string = '';
+    
     try {
       console.log('Attempting HuggingFace direct API call')
       const hfFormData = new FormData()
       hfFormData.append('file', file, (file as any).name ?? 'audio.wav')
 
-      const hfResponse = await fetch('https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/api/predict', {
-        method: 'POST',
-        body: hfFormData,
-        headers: {
-          'Accept': 'application/json',
-        },
-      })
+      // Try different possible Gradio API endpoints
+      const possibleEndpoints = [
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/run/predict',
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/api/predict',
+        'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/call/predict',
+      ];
 
-      console.log(`HuggingFace API response status: ${hfResponse.status}`)
+      let hfResponse: Response | null = null;
 
-      if (hfResponse.ok) {
+      for (const endpoint of possibleEndpoints) {
+        try {
+          console.log(`Trying endpoint: ${endpoint}`);
+          hfResponse = await fetch(endpoint, {
+            method: 'POST',
+            body: hfFormData,
+            headers: {
+              'Accept': 'application/json',
+            },
+          });
+          
+          console.log(`Endpoint ${endpoint} responded with status: ${hfResponse.status}`);
+          
+          if (hfResponse.ok) {
+            break; // Success, exit the loop
+          } else {
+            const errorText = await hfResponse.text();
+            lastError = `${hfResponse.status}: ${errorText}`;
+            console.warn(`Endpoint ${endpoint} failed: ${lastError}`);
+          }
+        } catch (error) {
+          lastError = String(error);
+          console.warn(`Endpoint ${endpoint} error:`, error);
+        }
+      }
+
+      if (hfResponse && hfResponse.ok) {
         const result = await hfResponse.json()
         console.log('HuggingFace API response:', JSON.stringify(result, null, 2))
         
@@ -46,26 +73,25 @@ export async function POST(request: NextRequest) {
             source: 'huggingface',
           })
         } else {
+          lastError = 'Unexpected response format from HuggingFace API';
           console.warn('Unexpected HuggingFace response format:', result)
         }
-      } else {
-        const errorText = await hfResponse.text()
-        console.warn(`HuggingFace API failed with status ${hfResponse.status}:`, errorText)
       }
     } catch (hfError) {
+      lastError = String(hfError);
       console.warn('HuggingFace direct API failed:', hfError)
     }
 
     // Fallback to proxy service
-    const proxyUrl = process.env.HF_PROXY_URL || 'http://localhost:8001'
-    console.log(`Trying proxy service at: ${proxyUrl}`)
+    const proxyUrl = process.env.HF_PROXY_URL
+    console.log(`Proxy URL configured: ${proxyUrl || 'none'}`)
     
-    if (!proxyUrl || proxyUrl === '') {
-      console.log('No proxy URL configured, skipping proxy attempt')
+    if (!proxyUrl || proxyUrl === '' || proxyUrl.includes('localhost')) {
+      console.log('No valid proxy URL configured, skipping proxy attempt')
       return NextResponse.json({ 
         success: false,
         error: 'Stem separation service temporarily unavailable. Please try again later.',
-        details: 'Both HuggingFace direct API and proxy service are unavailable.'
+        details: `HuggingFace API failed with: ${lastError}. No backup service available.`
       }, { status: 503 })
     }
 
