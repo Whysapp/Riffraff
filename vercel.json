@@ -6,15 +6,18 @@
   "functions": {
     "src/app/api/process-audio/route.ts": {
       "maxDuration": 60,
-      "memory": 1024
+      "memory": 1024,
+      "maxRequestBodySize": "50mb"
     },
     "src/app/api/upload-audio/route.ts": {
       "maxDuration": 60,
-      "memory": 512
+      "memory": 512,
+      "maxRequestBodySize": "25mb"
     },
     "src/app/api/stems/separate/route.ts": {
       "maxDuration": 120,
-      "memory": 1024
+      "memory": 1024,
+      "maxRequestBodySize": "50mb"
     }
   },
   "regions": ["iad1"],
