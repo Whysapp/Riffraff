@@ -264,7 +264,21 @@ export default function MusicTabGenerator() {
       const result = await response.json();
       
       if (!result.success) {
-        throw new Error(result.error || 'Stem separation failed');
+        // Handle different types of failures
+        if (result.directLink) {
+          // Show helpful message with direct link
+          toast.error(result.message || 'Service temporarily unavailable');
+          toast.info('Opening HuggingFace Space for direct use...');
+          
+          // Open the direct link in a new tab
+          window.open(result.directLink, '_blank');
+          
+          setIsSeparatingStems(false);
+          setStemJobStatus('Use HuggingFace Space directly');
+          return;
+        } else {
+          throw new Error(result.error || 'Stem separation failed');
+        }
       }
 
       // Check if we got immediate results or a job ID
