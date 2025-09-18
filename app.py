@@ -5,15 +5,18 @@ import gradio as gr
 import torch
 import numpy as np
 import wave
+import torchaudio
+import torchaudio.functional as F
 from demucs.pretrained import get_model
 from demucs.audio import AudioFile
 from demucs.apply import apply_model
 
 # Configuration
-MODEL_NAME = os.environ.get("DEMUCS_MODEL", "htdemucs_quantized")
+MODEL_NAME = os.environ.get("DEMUCS_MODEL", "htdemucs_ft")  # Use fine-tuned model for better quality
 TARGET_SAMPLE_RATE = 44100
 TARGET_NUM_CHANNELS = 2
 MAX_DURATION_SECONDS = int(os.environ.get("MAX_DURATION_SECONDS", "30"))
+USE_FLOAT32 = os.environ.get("USE_FLOAT32", "true").lower() == "true"
 
 # Global model cache
 _loaded_model = None
@@ -58,36 +61,39 @@ def separate_stems(audio_file):
             # Transpose if needed (samples, channels) -> (channels, samples)
             audio_data = audio_data.T
         
-        # Resample to target sample rate if needed
+        # Resample to target sample rate if needed using high-quality resampling
         if sample_rate != TARGET_SAMPLE_RATE:
-            # Simple resampling - in production you'd want proper resampling
-            ratio = TARGET_SAMPLE_RATE / sample_rate
-            new_length = int(audio_data.shape[1] * ratio)
-            audio_data = np.array([np.interp(np.linspace(0, len(channel), new_length), 
-                                           np.arange(len(channel)), channel) 
-                                 for channel in audio_data])
+            audio_tensor = torch.tensor(audio_data, dtype=torch.float32)
+            audio_tensor = F.resample(audio_tensor, sample_rate, TARGET_SAMPLE_RATE)
+            audio_data = audio_tensor.numpy()
         
         # Limit duration
         max_samples = TARGET_SAMPLE_RATE * MAX_DURATION_SECONDS
         if audio_data.shape[1] > max_samples:
             audio_data = audio_data[:, :max_samples]
         
-        # Normalize audio
-        reference_channel = audio_data.mean(0)
-        audio_data = (audio_data - reference_channel.mean()) / (reference_channel.std() + 1e-8)
+        # Improved normalization to preserve dynamics
+        # Use RMS normalization instead of z-score normalization
+        rms = np.sqrt(np.mean(audio_data ** 2))
+        if rms > 1e-8:  # Avoid division by zero
+            audio_data = audio_data / (rms * 3.0)  # Scale to prevent clipping while preserving dynamics
         
-        # Convert to tensor
-        audio_tensor = torch.tensor(audio_data, dtype=torch.float32, device=_inference_device)
+        # Store original statistics for denormalization
+        original_rms = rms
+        
+        # Convert to tensor with appropriate dtype
+        tensor_dtype = torch.float32 if USE_FLOAT32 else torch.float16
+        audio_tensor = torch.tensor(audio_data, dtype=tensor_dtype, device=_inference_device)
         audio_tensor = audio_tensor.unsqueeze(0)  # Add batch dimension
         
-        # Separate stems
+        # Separate stems with optimized parameters for quality
         with torch.no_grad():
             separated_sources = apply_model(
                 model,
                 audio_tensor,
                 split=True,
-                overlap=0.10,
-                shifts=0,
+                overlap=0.25,  # Increased overlap for smoother transitions
+                shifts=2,      # Use multiple shifts and average for better quality
             )[0].to("cpu")
         
         # Get source names
@@ -100,21 +106,44 @@ def separate_stems(audio_file):
             for source_index, source_name in enumerate(source_names):
                 stem_tensor = separated_sources[source_index]
                 
-                # De-normalize
-                stem_tensor = stem_tensor * (reference_channel.std() + 1e-8) + reference_channel.mean()
+                # Improved de-normalization using original RMS
+                if original_rms > 1e-8:
+                    stem_tensor = stem_tensor * (original_rms * 3.0)
+                
                 stem_np = stem_tensor.transpose(0, 1).numpy()  # [samples, channels]
                 
-                # Clip and convert to int16
+                # Apply soft clipping to reduce harsh artifacts
+                stem_np = np.tanh(stem_np * 0.9) * 1.1  # Soft saturation
                 stem_np = np.clip(stem_np, -1.0, 1.0)
                 
-                # Save as audio file that Gradio can handle
+                # Save as higher quality audio file
                 output_path = os.path.join(tmp_dir, f"{source_name}.wav")
-                with wave.open(output_path, "wb") as wf:
-                    wf.setnchannels(TARGET_NUM_CHANNELS)
-                    wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(TARGET_SAMPLE_RATE)
-                    pcm = (stem_np * 32767.0).astype(np.int16)
-                    wf.writeframes(pcm.tobytes())
+                
+                if USE_FLOAT32:
+                    # Save as 32-bit float WAV for maximum quality
+                    import soundfile as sf
+                    try:
+                        sf.write(output_path, stem_np, TARGET_SAMPLE_RATE, subtype='FLOAT')
+                    except ImportError:
+                        # Fallback to 24-bit if soundfile not available
+                        with wave.open(output_path, "wb") as wf:
+                            wf.setnchannels(TARGET_NUM_CHANNELS)
+                            wf.setsampwidth(3)  # 24-bit
+                            wf.setframerate(TARGET_SAMPLE_RATE)
+                            pcm = (stem_np * 8388607.0).astype(np.int32)
+                            # Convert to 24-bit
+                            pcm_bytes = []
+                            for sample in pcm.flatten():
+                                pcm_bytes.extend(sample.to_bytes(4, 'little', signed=True)[:3])
+                            wf.writeframes(bytes(pcm_bytes))
+                else:
+                    # Standard 16-bit output
+                    with wave.open(output_path, "wb") as wf:
+                        wf.setnchannels(TARGET_NUM_CHANNELS)
+                        wf.setsampwidth(2)  # 16-bit
+                        wf.setframerate(TARGET_SAMPLE_RATE)
+                        pcm = (stem_np * 32767.0).astype(np.int16)
+                        wf.writeframes(pcm.tobytes())
                 
                 # Copy to a permanent location for Gradio
                 import shutil
