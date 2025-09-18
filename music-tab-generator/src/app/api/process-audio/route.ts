@@ -4,6 +4,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
+// Increase body size limit for audio files
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '50mb',
+    },
+  },
+};
+
 type ProcessRequest = {
   sourceId?: string;
   audioUrl?: string;

@@ -94,9 +94,13 @@ export default function MusicTabGenerator() {
         return;
       }
     }
-    const maxSize = 50 * 1024 * 1024;
+    // Check file size limits based on feature
+    const maxSizeForTabs = 25 * 1024 * 1024; // 25MB for tablature
+    const maxSizeForStems = 50 * 1024 * 1024; // 50MB for stems
+    const maxSize = Math.max(maxSizeForTabs, maxSizeForStems);
+    
     if (file.size > maxSize) {
-      toast.error(`File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 50MB.`);
+      toast.error(`File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is ${maxSize / 1024 / 1024}MB.`);
       return;
     }
     setUploadedFile(file);
@@ -161,6 +165,9 @@ export default function MusicTabGenerator() {
       });
 
       if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error(`File too large for tablature generation. Please use a smaller audio file (under 25MB) or try compressing it.`);
+        }
         throw new Error(`Tablature generation failed: ${response.status}`);
       }
 
@@ -225,6 +232,9 @@ export default function MusicTabGenerator() {
       });
 
       if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error(`File too large for stem separation. Please use a smaller audio file (under 50MB) or try compressing it.`);
+        }
         throw new Error(`Stem separation failed: ${response.status}`);
       }
 
