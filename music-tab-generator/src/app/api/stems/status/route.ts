@@ -76,6 +76,17 @@ export async function GET(request: NextRequest) {
                   error: eventData.output || 'Processing error occurred',
                   source: 'huggingface'
                 });
+                
+              } else if (eventData.msg === 'unexpected_error' && eventData.session_not_found) {
+                // Session expired - this is common with long-running jobs
+                console.log('Session expired, but this is normal for long-running jobs');
+                return NextResponse.json({
+                  success: false,
+                  status: 'session_expired',
+                  error: 'Processing session expired. This happens with long-running jobs.',
+                  message: 'The job may have completed, but the session expired. Please try again with a smaller file for faster processing.',
+                  source: 'huggingface'
+                });
               }
             } catch (parseError) {
               // Skip invalid JSON lines

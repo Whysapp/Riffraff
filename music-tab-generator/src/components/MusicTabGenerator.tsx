@@ -302,10 +302,15 @@ export default function MusicTabGenerator() {
             return;
             
           } else if (statusResult.success === false) {
-            // Job failed
+            // Job failed or session expired
             setStemJobStatus('Failed');
             setIsSeparatingStems(false);
-            toast.error(statusResult.error || 'Stem separation failed');
+            
+            if (statusResult.status === 'session_expired') {
+              toast.error('Processing session expired. Try again with a smaller file for faster processing.');
+            } else {
+              toast.error(statusResult.error || 'Stem separation failed');
+            }
             return;
             
           } else {
