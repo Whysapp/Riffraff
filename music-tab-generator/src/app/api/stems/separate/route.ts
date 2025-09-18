@@ -4,11 +4,6 @@ export const runtime = 'nodejs'
 export const maxDuration = 120
 
 export async function POST(request: NextRequest) {
-  const baseUrl = process.env.STEMS_BASE_URL
-  if (!baseUrl) {
-    return NextResponse.json({ error: 'STEMS_BASE_URL not configured' }, { status: 500 })
-  }
-
   try {
     const formData = await request.formData()
     const file = formData.get('file')
@@ -16,31 +11,67 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing file' }, { status: 400 })
     }
 
-    const forwardForm = new FormData()
-    forwardForm.append('file', file, (file as any).name ?? 'audio.wav')
+    // Try direct HuggingFace Spaces API first
+    try {
+      const hfFormData = new FormData()
+      hfFormData.append('file', file, (file as any).name ?? 'audio.wav')
 
-    const url = `${baseUrl.replace(/\/$/, '')}/separate`
-    const resp = await fetch(url, {
-      method: 'POST',
-      body: forwardForm as any,
-    })
+      const hfResponse = await fetch('https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space/api/predict', {
+        method: 'POST',
+        body: hfFormData,
+        headers: {
+          'Accept': 'application/json',
+        },
+      })
 
-    if (!resp.ok) {
-      const text = await resp.text()
-      return NextResponse.json({ error: 'Separation failed', details: text }, { status: resp.status })
+      if (hfResponse.ok) {
+        const result = await hfResponse.json()
+        
+        // Process HuggingFace response
+        if (result.data && Array.isArray(result.data)) {
+          const stemData = result.data[0]
+          
+          return NextResponse.json({
+            success: true,
+            stems: stemData,
+            source: 'huggingface',
+          })
+        }
+      }
+    } catch (hfError) {
+      console.warn('HuggingFace direct API failed, trying proxy:', hfError)
     }
 
-    // Proxy back the zip file
-    const arrayBuffer = await resp.arrayBuffer()
-    return new NextResponse(Buffer.from(arrayBuffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': 'attachment; filename="stems.zip"',
-      },
+    // Fallback to proxy service
+    const proxyUrl = process.env.HF_PROXY_URL || 'http://localhost:8001'
+    const proxyFormData = new FormData()
+    proxyFormData.append('file', file, (file as any).name ?? 'audio.wav')
+
+    const proxyResponse = await fetch(`${proxyUrl}/separate-stems`, {
+      method: 'POST',
+      body: proxyFormData,
     })
+
+    if (!proxyResponse.ok) {
+      const errorText = await proxyResponse.text()
+      return NextResponse.json({ 
+        error: 'Stem separation failed', 
+        details: errorText 
+      }, { status: proxyResponse.status })
+    }
+
+    const result = await proxyResponse.json()
+    return NextResponse.json({
+      ...result,
+      source: 'proxy',
+    })
+
   } catch (err: any) {
-    return NextResponse.json({ error: 'Proxy error', details: String(err?.message ?? err) }, { status: 500 })
+    console.error('Stem separation error:', err)
+    return NextResponse.json({ 
+      error: 'Stem separation failed', 
+      details: String(err?.message ?? err) 
+    }, { status: 500 })
   }
 }
 

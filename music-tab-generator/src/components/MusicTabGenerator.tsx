@@ -31,6 +31,8 @@ export default function MusicTabGenerator() {
   const [waveData, setWaveData] = useState<Float32Array | null>(null);
   const [options, setOptions] = useState<AnalyzeOptions>({ minFreq: 70, maxFreq: 1500, amplitudeThreshold: 0.01 });
   const [useCache, setUseCache] = useState<boolean>(true);
+  const [stems, setStems] = useState<{drums: string, bass: string, other: string, vocals: string} | null>(null);
+  const [isSeparatingStems, setIsSeparatingStems] = useState<boolean>(false);
 
   const detectFileType = (file: File): boolean => {
     if (file.type && file.type.startsWith('audio/')) return true;
@@ -127,8 +129,6 @@ export default function MusicTabGenerator() {
     try {
       let arrayBuffer: ArrayBuffer | null = await loadAudioFromFile(uploadedFile);
 
-      // no server fallback; require audio bytes
-
       if (!arrayBuffer) throw new Error('Unable to load audio');
       const cacheKey = await buildCacheKey(arrayBuffer);
       if (useCache) {
@@ -143,25 +143,51 @@ export default function MusicTabGenerator() {
         }
       }
 
+      // Generate waveform for display
       const audioBuffer = await decodeArrayBufferToAudioBuffer(arrayBuffer);
       const mono = audioBuffer.getChannelData(0).slice(0);
       setWaveData(computeWaveform(mono, 600));
 
-      const processor = new AudioProcessor();
-      const analyses = processor.analyzeAudioBuffer(audioBuffer);
-      setFrames(analyses);
+      // Use HuggingFace Guitar Tabs AI for tablature generation
+      toast.info('Generating tablature with AI...');
+      
+      const formData = new FormData();
+      formData.append('file', uploadedFile);
+      formData.append('instrumentKey', selectedInstrument);
 
-      const generator = new TablatureGenerator();
-      const tablature = generator.generateTablature(analyses, mapInstrument(selectedInstrument));
-      setGeneratedTab(tablature.lines);
-      setDetectedTempo(tablature.tempo || processor.detectTempo(analyses) || null);
-      setDetectedKey(tablature.key || null);
+      const response = await fetch('/api/process-audio', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Tablature generation failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (!result.ok) {
+        throw new Error(result.error || 'Tablature generation failed');
+      }
+
+      setGeneratedTab(result.tablature);
+      setDetectedTempo(result.bpm || null);
+      setDetectedKey(result.key || null);
       setShowResults(true);
-      toast.success('Analysis complete');
+      
+      // Show success message with source info
+      const sourceMsg = result.source === 'huggingface' ? 'Generated with HuggingFace AI' :
+                       result.source === 'proxy' ? 'Generated with HuggingFace AI (via proxy)' :
+                       'Generated with fallback method';
+      toast.success(sourceMsg);
 
       // Persist to cache
-      setCache(cacheKey, { analysis: { tempo: tablature.tempo, key: tablature.key }, tab: tablature.lines });
+      setCache(cacheKey, { 
+        analysis: { tempo: result.bpm, key: result.key }, 
+        tab: result.tablature 
+      });
 
+      // Set up audio playback
       if (audioRef.current) {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
         const blob = new Blob([arrayBuffer], { type: uploadedFile?.type || 'audio/mpeg' });
@@ -180,6 +206,47 @@ export default function MusicTabGenerator() {
   const buildCacheKey = async (arrayBuffer: ArrayBuffer): Promise<string> => {
     const fileHash = await hashBuffer(arrayBuffer);
     return makeCacheKey([`file:${uploadedFile?.name || 'unknown'}`, fileHash, `inst:${selectedInstrument}`]);
+  };
+
+  const handleStemSeparation = async () => {
+    if (!uploadedFile) return;
+    setIsSeparatingStems(true);
+    setStems(null);
+
+    try {
+      toast.info('Separating stems with AI...');
+      
+      const formData = new FormData();
+      formData.append('file', uploadedFile);
+
+      const response = await fetch('/api/stems/separate', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Stem separation failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Stem separation failed');
+      }
+
+      setStems(result.stems);
+      
+      // Show success message with source info
+      const sourceMsg = result.source === 'huggingface' ? 'Stems separated with HuggingFace AI' :
+                       result.source === 'proxy' ? 'Stems separated with HuggingFace AI (via proxy)' :
+                       'Stems separated with fallback method';
+      toast.success(sourceMsg);
+
+    } catch (err: any) {
+      toast.error(err?.message || 'Stem separation failed');
+    } finally {
+      setIsSeparatingStems(false);
+    }
   };
 
   useEffect(() => {
@@ -343,23 +410,43 @@ export default function MusicTabGenerator() {
             </div>
           </div>
 
-          <button
-            onClick={handleProcess}
-            disabled={!uploadedFile || isProcessing}
-            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-lg transition-all flex items-center justify-center"
-          >
-            {isProcessing ? (
-              <>
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
-                Processing Audio...
-              </>
-            ) : (
-              <>
-                <Settings className="h-5 w-5 mr-2" />
-                Generate Tablature
-              </>
-            )}
-          </button>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              onClick={handleProcess}
+              disabled={!uploadedFile || isProcessing || isSeparatingStems}
+              className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-lg transition-all flex items-center justify-center"
+            >
+              {isProcessing ? (
+                <>
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
+                  Processing Audio...
+                </>
+              ) : (
+                <>
+                  <Settings className="h-5 w-5 mr-2" />
+                  Generate Tablature
+                </>
+              )}
+            </button>
+            
+            <button
+              onClick={handleStemSeparation}
+              disabled={!uploadedFile || isProcessing || isSeparatingStems}
+              className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-lg transition-all flex items-center justify-center"
+            >
+              {isSeparatingStems ? (
+                <>
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
+                  Separating Stems...
+                </>
+              ) : (
+                <>
+                  <Music className="h-5 w-5 mr-2" />
+                  Separate Stems
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {showResults && (
@@ -435,6 +522,36 @@ export default function MusicTabGenerator() {
               </div>
             )}
             {errorMsg && <div className="mt-6 text-sm text-red-300">{errorMsg}</div>}
+          </div>
+        )}
+
+        {stems && (
+          <div className="max-w-6xl mx-auto bg-white/10 backdrop-blur-lg rounded-2xl p-8 mb-8">
+            <h2 className="text-2xl font-semibold mb-6 text-center">Separated Stems</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {Object.entries(stems).map(([stemType, stemUrl]) => (
+                <div key={stemType} className="bg-white/5 rounded-lg p-4">
+                  <h3 className="font-semibold mb-2 text-purple-400 capitalize">{stemType}</h3>
+                  {stemUrl ? (
+                    <div className="space-y-2">
+                      <audio controls className="w-full">
+                        <source src={stemUrl} type="audio/wav" />
+                        Your browser does not support the audio element.
+                      </audio>
+                      <a 
+                        href={stemUrl} 
+                        download={`${stemType}.wav`}
+                        className="block text-center text-sm bg-purple-600 hover:bg-purple-700 text-white py-2 px-3 rounded transition-colors"
+                      >
+                        Download {stemType}
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="text-gray-400 text-sm">No {stemType} stem available</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
