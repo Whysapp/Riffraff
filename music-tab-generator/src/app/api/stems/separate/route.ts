@@ -26,9 +26,9 @@ export async function POST(request: NextRequest) {
       const baseUrl = 'https://ahk-d-spleeter-ht-demucs-stem-separation-2025.hf.space';
       const endpoint = `${baseUrl}/gradio_api/run/separate_selected_models`;
 
-      console.log(`Calling endpoint: ${endpoint}`);
+      console.log(`Using queue-based API approach`);
       
-      // First upload the file to get a temporary URL
+      // Step 1: Upload the file
       const uploadFormData = new FormData();
       uploadFormData.append('files', file, (file as any).name || 'audio.wav');
       
@@ -47,58 +47,99 @@ export async function POST(request: NextRequest) {
         const uploadResult = await uploadResponse.json();
         console.log('Upload result:', JSON.stringify(uploadResult, null, 2));
         
-        // Get the uploaded file path/URL
-        const filePath = uploadResult[0]?.name || uploadResult[0] || uploadResult;
+        // Get the uploaded file info
+        const fileInfo = uploadResult[0];
         
-        // Now call the separation function with the uploaded file
-        const payload = {
+        // Step 2: Join the queue
+        const queuePayload = {
           data: [
-            filePath,  // audio_path - use the uploaded file path
+            fileInfo,  // uploaded file info
             true,      // run_htdemucs
             true       // run_spleeter
           ],
           event_data: null,
-          fn_index: 0  // From the dependencies array
+          fn_index: 0,
+          trigger_id: 10, // Button component ID from config
+          session_hash: `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         };
         
-        const hfResponse = await fetch(endpoint, {
+        const queueResponse = await fetch(`${baseUrl}/gradio_api/queue/join`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(queuePayload),
         });
         
-        console.log(`Separation API response status: ${hfResponse.status}`);
+        console.log(`Queue join response status: ${queueResponse.status}`);
         
-        if (hfResponse.ok) {
-          const result = await hfResponse.json()
-          console.log('HuggingFace API response:', JSON.stringify(result, null, 2))
+        if (queueResponse.ok) {
+          const queueResult = await queueResponse.json();
+          console.log('Queue result:', JSON.stringify(queueResult, null, 2));
           
-          // Process response according to documentation
-          // Returns list of 10 elements: [drums, bass, other, vocals, vocals, drums, bass, other, piano, status]
-          if (result.data && Array.isArray(result.data) && result.data.length >= 4) {
-            const stems = {
-              drums: result.data[0]?.url || result.data[5]?.url || '',
-              bass: result.data[1]?.url || result.data[6]?.url || '',
-              other: result.data[2]?.url || result.data[7]?.url || '',
-              vocals: result.data[3]?.url || result.data[4]?.url || '',
-            };
+          // Step 3: Poll for results using Server-Sent Events or polling
+          const eventId = queueResult.event_id;
+          if (eventId) {
+            // Poll for completion
+            const maxAttempts = 30; // 30 attempts = ~60 seconds
+            let attempts = 0;
             
-            return NextResponse.json({
-              success: true,
-              stems: stems,
-              source: 'huggingface',
-              status: result.data[9] || 'Completed',
-            })
+            while (attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+              
+              try {
+                const statusResponse = await fetch(`${baseUrl}/gradio_api/queue/status`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ event_id: eventId }),
+                });
+                
+                if (statusResponse.ok) {
+                  const statusResult = await statusResponse.json();
+                  console.log(`Poll attempt ${attempts + 1}:`, statusResult);
+                  
+                  if (statusResult.success && statusResult.data) {
+                    // Process successful result
+                    const data = statusResult.data;
+                    if (Array.isArray(data) && data.length >= 4) {
+                      const stems = {
+                        drums: data[0]?.url || data[5]?.url || '',
+                        bass: data[1]?.url || data[6]?.url || '',
+                        other: data[2]?.url || data[7]?.url || '',
+                        vocals: data[3]?.url || data[4]?.url || '',
+                      };
+                      
+                      return NextResponse.json({
+                        success: true,
+                        stems: stems,
+                        source: 'huggingface',
+                        status: data[9] || 'Completed',
+                      });
+                    }
+                  } else if (statusResult.error) {
+                    lastError = statusResult.error;
+                    break;
+                  }
+                }
+              } catch (pollError) {
+                console.warn(`Poll attempt ${attempts + 1} failed:`, pollError);
+              }
+              
+              attempts++;
+            }
+            
+            if (attempts >= maxAttempts) {
+              lastError = 'Processing timeout - please try again with a smaller file';
+            }
           } else {
-            lastError = 'Unexpected response format from HuggingFace API';
-            console.warn('Unexpected response format:', result)
+            lastError = 'Failed to join processing queue';
           }
         } else {
-          const errorText = await hfResponse.text();
-          lastError = `${hfResponse.status}: ${errorText}`;
-          console.warn(`HuggingFace API failed: ${lastError}`);
+          const queueError = await queueResponse.text();
+          lastError = `Queue join failed: ${queueResponse.status} ${queueError}`;
+          console.warn('Queue join failed:', lastError);
         }
       }
     } catch (hfError) {
