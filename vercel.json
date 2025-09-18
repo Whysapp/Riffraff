@@ -15,8 +15,8 @@
       "maxRequestBodySize": "25mb"
     },
     "src/app/api/stems/separate/route.ts": {
-      "maxDuration": 25,
-      "memory": 512,
+      "maxDuration": 60,
+      "memory": 1024,
       "maxRequestBodySize": "25mb"
     },
     "src/app/api/stems/status/route.ts": {

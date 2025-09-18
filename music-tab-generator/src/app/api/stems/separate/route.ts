@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 export const runtime = 'nodejs'
-export const maxDuration = 15 // Very short timeout, just start job and return immediately
+export const maxDuration = 60 // Increased timeout for file upload and job start
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       uploadFormData.append('files', file, (file as any).name || 'audio.wav');
       
       const uploadController = new AbortController();
-      const uploadTimeout = setTimeout(() => uploadController.abort(), 8000); // 8 second timeout
+      const uploadTimeout = setTimeout(() => uploadController.abort(), 30000); // 30 second timeout for upload
       
       const uploadResponse = await fetch(`${baseUrl}/gradio_api/upload`, {
         method: 'POST',
@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
       };
       
       const queueController = new AbortController();
-      const queueTimeout = setTimeout(() => queueController.abort(), 5000); // 5 second timeout
+      const queueTimeout = setTimeout(() => queueController.abort(), 20000); // 20 second timeout for queue join
       
       const queueResponse = await fetch(`${baseUrl}/gradio_api/queue/join`, {
         method: 'POST',
