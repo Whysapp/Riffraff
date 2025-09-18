@@ -91,66 +91,86 @@ export async function POST(request: NextRequest) {
               attempts++;
               
               try {
-                // Use Server-Sent Events endpoint for real-time updates
-                const statusUrl = `${baseUrl}/gradio_api/queue/data?session_hash=${queuePayload.session_hash}`;
-                console.log(`Poll attempt ${attempts}: checking ${statusUrl}`);
+                // Try different polling approaches
+                console.log(`Poll attempt ${attempts} for event_id: ${eventId}`);
                 
-                const statusResponse = await fetch(statusUrl, {
-                  method: 'GET',
+                // Approach 1: Check queue status directly
+                let statusResponse = await fetch(`${baseUrl}/gradio_api/queue/status`, {
+                  method: 'POST',
                   headers: {
-                    'Accept': 'text/event-stream',
+                    'Content-Type': 'application/json',
                   },
+                  body: JSON.stringify({ 
+                    event_id: eventId,
+                    session_hash: queuePayload.session_hash 
+                  }),
                 });
                 
+                console.log(`Queue status response: ${statusResponse.status}`);
+                
                 if (statusResponse.ok) {
-                  const statusText = await statusResponse.text();
-                  console.log(`Poll attempt ${attempts} response:`, statusText.substring(0, 500));
+                  const statusResult = await statusResponse.json();
+                  console.log(`Queue status result:`, JSON.stringify(statusResult, null, 2));
                   
-                  // Parse SSE format: look for "data: " lines
-                  const lines = statusText.split('\n');
-                  for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                      try {
-                        const data = JSON.parse(line.substring(6));
-                        console.log(`SSE data:`, data);
+                  if (statusResult.success !== undefined) {
+                    if (statusResult.success && statusResult.data) {
+                      // Process successful result
+                      const data = statusResult.data;
+                      if (Array.isArray(data) && data.length >= 4) {
+                        const stems = {
+                          drums: data[0]?.url || data[5]?.url || '',
+                          bass: data[1]?.url || data[6]?.url || '',
+                          other: data[2]?.url || data[7]?.url || '',
+                          vocals: data[3]?.url || data[4]?.url || '',
+                        };
                         
-                        if (data.msg === 'process_completed' && data.output) {
-                          // Process successful result
-                          const outputData = data.output.data;
-                          if (Array.isArray(outputData) && outputData.length >= 4) {
-                            const stems = {
-                              drums: outputData[0]?.url || outputData[5]?.url || '',
-                              bass: outputData[1]?.url || outputData[6]?.url || '',
-                              other: outputData[2]?.url || outputData[7]?.url || '',
-                              vocals: outputData[3]?.url || outputData[4]?.url || '',
-                            };
-                            
-                            console.log('Successfully extracted stems:', stems);
-                            
-                            return NextResponse.json({
-                              success: true,
-                              stems: stems,
-                              source: 'huggingface',
-                              status: outputData[9] || 'Completed',
-                            });
-                          }
-                        } else if (data.msg === 'process_starts') {
-                          console.log('Processing started...');
-                        } else if (data.msg === 'estimation') {
-                          console.log(`Queue position: ${data.rank}, estimated time: ${data.queue_eta}s`);
-                        } else if (data.msg === 'error') {
-                          lastError = data.output || 'Processing error occurred';
-                          console.error('Processing error:', data);
-                          break;
+                        console.log('Successfully extracted stems:', stems);
+                        
+                        return NextResponse.json({
+                          success: true,
+                          stems: stems,
+                          source: 'huggingface',
+                          status: data[9] || 'Completed',
+                        });
+                      }
+                    } else if (statusResult.success === false) {
+                      lastError = statusResult.error || 'Processing failed';
+                      console.error('Processing failed:', statusResult);
+                      break;
+                    }
+                  }
+                }
+                
+                // Approach 2: Try SSE endpoint if direct status doesn't work
+                if (!statusResponse.ok || attempts % 5 === 0) {
+                  console.log('Trying SSE endpoint approach');
+                  
+                  const sseUrl = `${baseUrl}/gradio_api/queue/data?session_hash=${queuePayload.session_hash}`;
+                  const sseResponse = await fetch(sseUrl, {
+                    method: 'GET',
+                    headers: {
+                      'Accept': 'text/event-stream',
+                    },
+                  });
+                  
+                  if (sseResponse.ok) {
+                    const sseText = await sseResponse.text();
+                    console.log(`SSE response (first 200 chars):`, sseText.substring(0, 200));
+                    
+                    // Look for completion in SSE stream
+                    if (sseText.includes('process_completed') || sseText.includes('"success":true')) {
+                      console.log('Found completion indicator in SSE stream');
+                      // Try to extract data from the SSE response
+                      const lines = sseText.split('\n');
+                      for (const line of lines) {
+                        if (line.includes('process_completed') || line.includes('data')) {
+                          console.log('SSE line with data:', line);
                         }
-                      } catch (parseError) {
-                        // Skip invalid JSON lines
                       }
                     }
                   }
-                } else {
-                  console.warn(`Poll attempt ${attempts} failed with status: ${statusResponse.status}`);
                 }
+                
               } catch (pollError) {
                 console.warn(`Poll attempt ${attempts} failed:`, pollError);
               }
